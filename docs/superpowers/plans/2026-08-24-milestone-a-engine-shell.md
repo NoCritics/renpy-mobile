@@ -2037,7 +2037,14 @@ def _purge_modules(previous_basedir: str | None) -> str:
     # The game directory is pushed onto sys.path by the game itself and by
     # bootstrap; leaving stale entries there would let the next game import from
     # a directory that no longer holds the modules it expects.
-    sys.path[:] = [p for p in sys.path if not os.path.abspath(p).startswith(root)]
+    # Mirror the module filter's directory-boundary guard. A bare startswith(root)
+    # would also strip a sibling like <basedir>/game_assets or <basedir>/gamelib,
+    # which are not under game/ at all.
+    def _under_root(path: str) -> bool:
+        resolved = os.path.abspath(path)
+        return resolved == root or resolved.startswith(root + os.sep)
+
+    sys.path[:] = [p for p in sys.path if not _under_root(p)]
 
     return f"purged {len(removed)} modules: {', '.join(sorted(removed))}" if removed else ""
 
