@@ -35,6 +35,7 @@ jobs:
 
       - name: Inspect generated project
         run: |
+          set -euo pipefail
           find build/xcode -maxdepth 3 | sort | head -60
           echo "=== base/ contents ==="
           ls -la build/xcode/*/base | head -30
@@ -44,6 +45,20 @@ jobs:
           xcodebuild -list -project build/xcode/*/*.xcodeproj
           echo "=== bundle id / product name (record, do not fix here) ==="
           grep -h "PRODUCT_BUNDLE_IDENTIFIER\|PRODUCT_NAME" build/xcode/*/*.xcodeproj/project.pbxproj | sort -u
+
+          # The listings above are useful log output, but they are not what
+          # fails this job on their own -- a later edit to this file could
+          # add "|| true", redirect stderr, or otherwise silently defeat the
+          # implicit fail-closed behavior. Make the pass/fail condition
+          # explicit instead of relying on ls/find's own exit codes.
+          echo "=== explicit assertions ==="
+          PROJDIR="$(find build/xcode -mindepth 1 -maxdepth 1 -type d | head -1)"
+          test -n "$PROJDIR" || { echo "ASSERT FAILED: no project directory under build/xcode" >&2; exit 1; }
+          test -d "$PROJDIR/base" || { echo "ASSERT FAILED: $PROJDIR/base does not exist" >&2; exit 1; }
+          test -d "$PROJDIR/base/game" || { echo "ASSERT FAILED: $PROJDIR/base/game does not exist" >&2; exit 1; }
+          test -f "$PROJDIR/base/main.py" || { echo "ASSERT FAILED: $PROJDIR/base/main.py does not exist" >&2; exit 1; }
+          test -n "$(ls -A "$PROJDIR/base/game")" || { echo "ASSERT FAILED: $PROJDIR/base/game is empty" >&2; exit 1; }
+          echo "OK: base/, base/game/ (non-empty), and base/main.py all present under $PROJDIR"
 
       - name: Inventory renios
         run: |

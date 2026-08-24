@@ -22,9 +22,23 @@ if [ ! -d "$SDK/renios" ]; then
     cp -R "$RENIOS" "$SDK/renios"
 fi
 
+# create.py:117 links against libpython{major}.{minor}.a using the RUNNING
+# interpreter's version, and only CPython 3.12 matches the libpython3.12.a
+# shipped in the prebuilts. Finding *some* python is not enough -- it must
+# be *that* python, so the candidate is version-checked before use, whether
+# it came from the expected path or the fallback search.
+REQUIRED_PY_VERSION="3.12"
 PY="$SDK/lib/py3-mac-universal/python"
 [ -x "$PY" ] || PY="$(find "$SDK/lib" -maxdepth 2 -name python -type f -perm +111 | head -1)"
 [ -x "$PY" ] || { echo "No macOS Python found under $SDK/lib" >&2; exit 1; }
+
+FOUND_PY_VERSION="$("$PY" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+if [ "$FOUND_PY_VERSION" != "$REQUIRED_PY_VERSION" ]; then
+    echo "Wrong Python version at $PY: found $FOUND_PY_VERSION, need $REQUIRED_PY_VERSION" >&2
+    echo "(the prebuilt libraries under $SDK ship libpython$REQUIRED_PY_VERSION.a --" >&2
+    echo " linking against any other version will fail at Xcode build time, not here)" >&2
+    exit 1
+fi
 
 # DEST is the Xcode project directory itself (create_project() calls
 # os.makedirs(dest) on it), not a parent to create projects under. Its
