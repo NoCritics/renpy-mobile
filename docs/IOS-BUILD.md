@@ -1213,6 +1213,18 @@ duplicated.
 - `docs/INSTALL.md` (new) — the Sideloadly walkthrough for a non-developer reader.
 - `docs/IOS-BUILD.md` — this section.
 
+## Verified live: the workflow still runs green with the new trigger and permissions
+
+Run [32773971562](https://github.com/NoCritics/renpy-mobile/actions/runs/32773971562)
+(push to `milestone-b`, not a tag) — **GREEN**, all 18 steps. "Attach to release" shows
+as skipped (`-`), not failed or run: exactly the expected behavior for a branch push
+under `if: startsWith(github.ref, 'refs/tags/')`. The new job-level
+`permissions: contents: write` did not break any other step. Cache hit confirmed again
+on this same run: `Cache hit for: renpy-8.5.3-archives`. This run does **not** exercise
+the release-attachment step itself — that still requires an actual tag push, which is
+the repository owner's call — but it does confirm the workflow file is valid and the
+gating condition behaves correctly.
+
 ## Not determined (Task 6)
 
 - Whether `softprops/action-gh-release@v2` actually succeeds against a real tag push —
