@@ -1157,7 +1157,17 @@ def _handle_quit_to_library(command: Command) -> None:
 
 
 def _restart() -> None:
-    """Ask Ren'Py to tear down and re-enter the bootstrap restart loop."""
+    """Tear the live engine down, then re-enter the bootstrap restart loop.
+
+    Teardown happens here rather than in select_next_basedir because this is the last
+    moment the outgoing game's native resources are still reachable. See
+    vnshell.purge.teardown_live_engine for why that ordering is load-bearing.
+    """
+
+    from vnshell import purge
+
+    for action in purge.teardown_live_engine():
+        print(f"[vnshell] teardown: {action}")
 
     import renpy.game  # type: ignore
 
@@ -1882,6 +1892,69 @@ from __future__ import annotations
 import gc
 import os
 import sys
+
+
+def teardown_live_engine() -> list[str]:
+    """Release the running engine's native resources, while it still owns them.
+
+    This runs from lifecycle._restart(), *before* UtterRestartException is raised —
+    which is the only moment the outgoing game's renderer, audio and caches are still
+    live and reachable.
+
+    The distinction matters and was learned the hard way. purge_engine_state() below
+    runs from select_next_basedir(), which bootstrap calls *after* renpy.reload_all().
+    By then the engine's module objects have been replaced, so teardown calls there
+    operate on freshly-constructed objects while the previous game's GL surfaces,
+    audio buffers and font caches are orphaned — unreachable from Python and never
+    freed. Cleaning up post-reload measured no effect at all across 100 cycles.
+
+    These are the same calls bootstrap.py's own `finally` block makes at process exit
+    (bootstrap.py:409-419) — the difference is that we make them per switch, which is
+    exactly what that `finally` sitting outside the restart loop fails to do.
+    """
+
+    actions: list[str] = []
+
+    for label, step in (
+        ("stopped audio", _stop_audio),
+        ("stopped video", _stop_video),
+        ("freed fonts", _free_fonts),
+        ("quit image cache", _quit_image_cache),
+        ("quit renderer", _quit_draw),
+        ("quit audio subsystem", _quit_audio),
+    ):
+        try:
+            step()
+            actions.append(label)
+        except Exception as exc:  # noqa: BLE001 — teardown must never propagate
+            actions.append(f"failed: {label}: {exc!r}")
+
+    return actions
+
+
+def _free_fonts() -> None:
+    import renpy.text.font  # type: ignore
+
+    renpy.text.font.free_memory()
+
+
+def _quit_image_cache() -> None:
+    import renpy.display.im  # type: ignore
+
+    renpy.display.im.cache.quit()
+
+
+def _quit_draw() -> None:
+    import renpy.display  # type: ignore
+
+    if renpy.display.draw:
+        renpy.display.draw.quit()
+
+
+def _quit_audio() -> None:
+    import renpy.audio.audio  # type: ignore
+
+    renpy.audio.audio.quit()
 
 
 def purge_engine_state(previous_basedir: str | None) -> list[str]:
