@@ -1,0 +1,120 @@
+# THROWAWAY SPIKE CODE — not the eventual design.
+#
+# Replaces the .xcodeproj that Ren'Py's ios_create generates. The division of labour
+# being tested: Ren'Py's own tooling still runs and still produces base/ (the engine, the
+# stdlib, the game), because that part works and reimplementing it would be madness. But
+# the Xcode project itself is ours, generated declaratively, so adding a Swift file does
+# not mean surgery on a generated pbxproj.
+#
+# Every value below was read out of renios' own prototype.xcodeproj rather than guessed.
+
+name: VNPlayer
+
+options:
+  bundleIdPrefix: io.github.nocritics
+  deploymentTarget:
+    iOS: "13.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+targets:
+  VNPlayer:
+    type: application
+    platform: iOS
+
+    sources:
+      # Ren'Py's own prototype sources, copied into this directory by ios_create.
+      - path: main.c
+      - path: Log.m
+      - path: VideoPlayer.m
+      - path: IAPHelper.m
+
+      # base/ is a FOLDER REFERENCE, not a group: it holds the engine, the stdlib and the
+      # game, and must be copied into the bundle wholesale with its structure intact.
+      # renios' prototype declares it lastKnownFileType = folder for the same reason.
+      - path: base
+        type: folder
+        buildPhase: resources
+
+      - path: Media.xcassets
+      - path: Launch Screen.storyboard
+      - path: LaunchImage-background.png
+      - path: LaunchImage-foreground.png
+
+      # Ours.
+      - path: vnspike
+
+    dependencies:
+      # MetalANGLE is a DYNAMIC framework -- renios embeds it via a Copy Files phase
+      # (dstSubfolderSpec 10), and its binary is a fat Mach-O, not a static archive.
+      # embed: true is therefore required, not optional.
+      - framework: Frameworks/MetalANGLE.xcframework
+        embed: true
+        codeSign: false
+
+      - sdk: UIKit.framework
+      - sdk: Foundation.framework
+      - sdk: CoreGraphics.framework
+      - sdk: CoreMotion.framework
+      - sdk: CoreServices.framework
+      - sdk: MobileCoreServices.framework
+      - sdk: AudioToolbox.framework
+      - sdk: GameController.framework
+      - sdk: ImageIO.framework
+      - sdk: QuartzCore.framework
+
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.nocritics.vnplayer
+        INFOPLIST_FILE: Info.plist
+        TARGETED_DEVICE_FAMILY: "1,2"
+
+        SWIFT_VERSION: "5.0"
+        SWIFT_OBJC_BRIDGING_HEADER: vnspike/VNSpike-Bridging-Header.h
+        ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES: YES
+        CLANG_ENABLE_MODULES: YES
+
+        HEADER_SEARCH_PATHS:
+          - $(inherited)
+          - $(SRCROOT)/vnspike
+
+        LIBRARY_SEARCH_PATHS:
+          - $(inherited)
+          - $(SRCROOT)/prebuilt/release
+
+        FRAMEWORK_SEARCH_PATHS:
+          - $(inherited)
+          - $(SRCROOT)/Frameworks
+
+        # Verbatim from renios' prototype, in its order -- static archive link order is
+        # significant and this is not a list to tidy.
+        OTHER_LDFLAGS:
+          - -lrenpython
+          - -lrenpy
+          - -lpython3.12
+          - -lassimp
+          - -lavformat
+          - -lavcodec
+          - -lswscale
+          - -lswresample
+          - -lavutil
+          - -lSDL2_image
+          - -lSDL2
+          - -lavif
+          - -laom
+          - -lyuv
+          - -lturbojpeg
+          - -lpng16
+          - -lwebp
+          - -lharfbuzz
+          - -lbrotlidec
+          - -lbrotlicommon
+          - -lfribidi
+          - -lfreetype
+          - -lffi
+          - -lssl
+          - -lcrypto
+          - -llzma
+          - -lbz2
+          - -lz
+          - -lstdc++

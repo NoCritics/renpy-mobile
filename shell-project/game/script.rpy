@@ -6,6 +6,21 @@ init python:
         import vnshell.lifecycle
         vnshell.lifecycle.tick()
 
+        # SPIKE: drain anything Swift posted, and surface it on screen.
+        lib = getattr(store, "vnspike_lib", None)
+        if lib is None:
+            return
+        try:
+            import ctypes
+            cmd = ctypes.c_int32()
+            buf = ctypes.create_string_buffer(512)
+            while lib.vnbridge_poll(ctypes.byref(cmd), buf, ctypes.c_int32(512)) == 1:
+                store.vnspike_received += 1
+                store.vnspike_last = "cmd=%d %r" % (cmd.value, buf.value.decode("utf-8", "replace"))
+                renpy.restart_interaction()
+        except Exception as e:
+            store.vnspike_last = "poll failed: %s" % type(e).__name__
+
     config.periodic_callbacks.append(_vnplayer_tick)
 
     def vnplayer_probe():
@@ -55,11 +70,42 @@ init python:
         except Exception as e:
             lines.append("vnshell: FAILED (%s: %s)" % (type(e).__name__, e))
 
+        # --- SPIKE: can Python reach C symbols linked into the main executable? ---
+        # This is the question the whole spike turns on. ctypes.CDLL(None) loads the
+        # running image; if -dead_strip removed our symbols, or ctypes is unavailable,
+        # this is where we find out -- with the actual exception, not a black screen.
+        try:
+            import ctypes
+            lib = ctypes.CDLL(None)
+            ping = lib.vnbridge_ping
+            ping.restype = ctypes.c_int
+            got = ping()
+            lines.append("bridge ping: 0x%04X (want 0x5643) %s"
+                         % (got, "OK" if got == 0x5643 else "MISMATCH"))
+            store.vnspike_lib = lib
+        except Exception as e:
+            lines.append("bridge ping: FAILED (%s: %s)" % (type(e).__name__, e))
+            store.vnspike_lib = None
+
+        # --- SPIKE: can Python install a SwiftUI overlay over SDL's window? ---
+        if store.vnspike_lib is not None:
+            try:
+                install = store.vnspike_lib.vnspike_install_overlay
+                install.restype = ctypes.c_int
+                rc = install()
+                meaning = {1: "installed", 2: "already installed",
+                           -1: "not main thread", -2: "no UIWindowScene"}
+                lines.append("swift overlay: rc=%d (%s)" % (rc, meaning.get(rc, "unknown")))
+            except Exception as e:
+                lines.append("swift overlay: FAILED (%s: %s)" % (type(e).__name__, e))
+
         return lines
 
 
 default vnplayer_facts = []
 default vnplayer_seconds = 0
+default vnspike_received = 0
+default vnspike_last = "(nothing yet)"
 
 
 screen vnplayer_shell():
@@ -84,6 +130,10 @@ screen vnplayer_shell():
 
             for line in vnplayer_facts:
                 text "[line]" size 20
+
+            null height 6
+            text "from Swift: [vnspike_received] received" size 22
+            text "last: [vnspike_last]" size 18
 
 
 label start:

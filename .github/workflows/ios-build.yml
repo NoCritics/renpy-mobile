@@ -3,7 +3,7 @@ name: iOS build
 on:
   workflow_dispatch:
   push:
-    branches: [main, milestone-b]
+    branches: [main, milestone-b, 'spike/**']
     tags: ['v*']
 
 jobs:
@@ -76,6 +76,17 @@ jobs:
       # docs/IOS-BUILD.md for the measured result). Revisit before any wider release.
       - name: Make Ren'Py's log readable on device
         run: bash scripts/ios/enable_public_log.sh
+
+      # SPIKE (spike/swift-bridge branch only): replace Ren'Py's generated .xcodeproj
+      # with one XcodeGen builds, so Swift sources can be members of the target.
+      # Throwaway - this is a feasibility probe, not the eventual design.
+      - name: Install XcodeGen (spike)
+        if: startsWith(github.ref, 'refs/heads/spike/')
+        run: brew install xcodegen && xcodegen --version
+
+      - name: Regenerate project with XcodeGen (spike)
+        if: startsWith(github.ref, 'refs/heads/spike/')
+        run: bash spike/build_spike.sh
 
       - name: Inspect generated project
         run: |
