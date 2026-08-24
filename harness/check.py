@@ -61,7 +61,16 @@ def main() -> None:
 
     rss = load("rss.jsonl")
     measured = [r["rss_bytes"] for r in rss if r["rss_bytes"] > 0]
-    if len(measured) >= 4:
+
+    if not measured:
+        # Never report PASS on an unmeasured memory check. Memory growth is the one
+        # failure that survives to iOS as a Jetsam kill, so "we could not measure it"
+        # must look like a failure, not like success.
+        failures.append(
+            f"memory was never measured — all {len(rss)} samples read 0 bytes. "
+            "The RSS probe is broken; fix it before trusting this run."
+        )
+    elif len(measured) >= 4:
         first, last = measured[1], measured[-1]
         if last > first * RSS_GROWTH_LIMIT:
             failures.append(

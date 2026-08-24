@@ -41,80 +41,112 @@ Notes:
 
 ## Harness baseline
 
-Recorded after running `bash scripts/run_harness.sh 2` (Milestone A, Task 7). This is
-the **expected first failure** — there is no purge layer yet (Task 8 builds one), and
-this run's output is exactly the evidence Task 8 is derived from. A PASS at this step
-would have been the surprising result.
+Recorded after running `bash scripts/run_harness.sh 4` (Milestone A, Task 7, corrected
+run). This is the **expected first failure** — there is no purge layer yet (Task 8
+builds one), and this run's output is exactly the evidence Task 8 is derived from. A
+PASS at this step would have been the surprising result.
+
+An earlier 2-cycle run of this same harness reported `rss_bytes: 0` for every sample
+because `GetCurrentProcess()` was called without declaring `restype`; ctypes defaults
+that to `c_int`, which truncates the 64-bit pseudo-handle and makes
+`GetProcessMemoryInfo` fail silently. `check.py` also treated an all-zero RSS log as
+"nothing to check" rather than a failure, so a broken probe could have produced a
+false PASS on the memory-growth check. Both were fixed (see `shell/vnshell/harness.py`
+`_rss_bytes()` and `harness/check.py`'s RSS section) and the harness was re-run with
+4 cycles, below, so the memory check would have enough samples to be meaningful.
 
 Command and outcome:
 
 ```
-$ bash scripts/run_harness.sh 2
+$ bash scripts/run_harness.sh 4
 Applying shell overlay...
 Rig ready at /c/Users/user/source/repos/workstation/renpy-moile/.rig
-Running 2 cycles (timeout 70s)...
+Running 4 cycles (timeout 80s)...
+Resetting cache.
+Resetting cache.
 Resetting cache.
 Resetting cache.
 Engine exited cleanly.
 FAIL: cycle 1: game B read sentinel 'A', expected 'B' — sys.modules contamination
 FAIL: cycle 1: game B inherited game A's font 'DejaVuSans.ttf' — style bleed
+FAIL: cycle 3: game B read sentinel 'A', expected 'B' — sys.modules contamination
+FAIL: cycle 3: game B inherited game A's font 'DejaVuSans.ttf' — style bleed
+FAIL: memory grew from 185.4 MB to 260.9 MB over 5 cycles — leak
 ```
 
 Overall script exit status: **1** (non-zero, from `check.py`). The engine process
 itself exited **cleanly with status 0** — it ran the full requested cycle count and
 called `sys.exit(0)` from `vnshell.harness.advance()` once `cycle > _total_cycles()`.
-The failure is not a crash or a hang: the engine ran to completion and the two
+The failure is not a crash or a hang: the engine ran to completion and all five
 `FAIL:` lines above came from `check.py` inspecting the resulting observations.
 
-Cycles: `harness/out/cycle.txt` contains `3` after the run (2 requested + 1, since the
+Cycles: `harness/out/cycle.txt` contains `5` after the run (4 requested + 1, since the
 counter is incremented past the last real launch before the run recognizes it should
-stop and exits). Both of the 2 requested game launches (game_a then game_b) completed
-and each produced one observation record — the run did not stop early.
+stop and exits). All 4 requested game launches (A, B, A, B) completed and each
+produced one observation record — the run did not stop early.
 
-`harness/out/observations.jsonl`, verbatim (2 lines, one per cycle):
+`harness/out/observations.jsonl`, verbatim, in full (4 lines, one per cycle):
 
 ```
 {"game": "A", "sentinel_value": "A", "font": "DejaVuSans.ttf", "saves_dir": "C:/Users/user/source/repos/workstation/renpy-moile/harness/out/saves/game_a", "leaked_store_var": null}
 {"game": "B", "sentinel_value": "A", "font": "DejaVuSans.ttf", "saves_dir": "C:/Users/user/source/repos/workstation/renpy-moile/harness/out/saves/game_b", "leaked_store_var": null}
+{"game": "A", "sentinel_value": "A", "font": "DejaVuSans.ttf", "saves_dir": "C:/Users/user/source/repos/workstation/renpy-moile/harness/out/saves/game_a", "leaked_store_var": null}
+{"game": "B", "sentinel_value": "A", "font": "DejaVuSans.ttf", "saves_dir": "C:/Users/user/source/repos/workstation/renpy-moile/harness/out/saves/game_b", "leaked_store_var": null}
 ```
+
+`harness/out/rss.jsonl`, verbatim, in full — now real, non-zero readings:
+
+```
+{"cycle": 0, "rss_bytes": 135950336}
+{"cycle": 1, "rss_bytes": 185401344}
+{"cycle": 2, "rss_bytes": 212320256}
+{"cycle": 3, "rss_bytes": 234242048}
+{"cycle": 4, "rss_bytes": 260939776}
+```
+
+In decimal MB (bytes / 1e6, matching `check.py`'s own arithmetic): 136.0 → 185.4 →
+212.3 → 234.2 → 260.9 MB across the 5 samples (cycle 0 through cycle 4). `check.py`
+compares `measured[1]` (185,401,344 bytes ≈ 185.4 MB, the reading after the first
+switch) against `measured[-1]` (260,939,776 bytes ≈ 260.9 MB, the reading after the
+fourth): a **40.7% increase** over 4 game switches, against the 30% growth ceiling —
+a genuine, measured leak, not a probe artifact.
 
 Interpretation:
 
-- **`sys.modules` contamination, confirmed as predicted.** Game B's `sentinel` module
-  import resolved to the cached module object from game A's earlier import (both are
-  named `sentinel` and `sys.path` was never cleaned between launches), so
-  `sentinel.VALUE` read `"A"` instead of `"B"`. Both AI reviewers who predicted this
-  ahead of time were right.
-- **Style bleed, a second and distinct failure.** Game B's `style.default.font` came
-  back as `'DejaVuSans.ttf'` — the value game A's script explicitly set
-  (`$ style.default.font = "DejaVuSans.ttf"`) — instead of Ren'Py's default. Style
-  state was not reset by `renpy.reload_all()` / the restart loop either.
-- **Store variables were *not* contaminated.** `leaked_store_var` is `null` for game
-  B, even though game A's script set `game_a_marker = "leaked"` in its store. Unlike
-  `sys.modules` and style state, the Ren'Py store itself does appear to be cleared
-  across the restart. `check.py`'s store-leak assertion did not fire.
+- **`sys.modules` contamination, confirmed as predicted, on every A→B switch.** Both
+  times game B loaded (cycle 1 and cycle 3), its `sentinel` module import resolved to
+  the cached module object from game A's earlier import (both are named `sentinel`
+  and `sys.path` was never cleaned between launches), so `sentinel.VALUE` read `"A"`
+  instead of `"B"`. This reproduced identically on both A→B transitions, not just the
+  first — it is not a one-off startup artifact.
+- **Style bleed, on every A→B switch.** Game B's `style.default.font` came back as
+  `'DejaVuSans.ttf'` — the value game A's script explicitly set
+  (`$ style.default.font = "DejaVuSans.ttf"`) — instead of Ren'Py's default, both
+  times. Style state was not reset by `renpy.reload_all()` / the restart loop.
+- **Real memory growth, now correctly measured and correctly caught.** Working set
+  grew monotonically every single cycle (each switch is a net increase, not just an
+  end-to-end comparison): 136.0 → 185.4 → 212.3 → 234.2 → 260.9 MB. This is consistent
+  with each switch accumulating rather than releasing per-game state (loaded images,
+  cached `.rpyc` bytecode, style objects, etc.) — exactly the class of failure that
+  becomes a Jetsam kill on iOS if uncorrected. Task 8's purge layer needs to address
+  this, not just the two contamination bugs above.
+- **Store variables were *not* contaminated.** `leaked_store_var` is `null` for both
+  game B observations, even though game A's script sets `game_a_marker = "leaked"` in
+  its store both times. Unlike `sys.modules`, style state, and process memory, the
+  Ren'Py store itself does appear to be cleared across the restart. `check.py`'s
+  store-leak assertion did not fire.
 - **Save directories stayed correctly isolated.** No "games share a save directory"
-  or "save dir moved between launches" failure fired; `saves_dir` for game A and game
-  B are distinct paths under `VNPLAYER_SAVES_ROOT`, as `main.py:path_to_saves` intends.
+  or "save dir moved between launches" failure fired across all 4 launches;
+  `saves_dir` for game A and game B are distinct, stable paths under
+  `VNPLAYER_SAVES_ROOT`, as `main.py:path_to_saves` intends.
 - **No traceback file was produced.** `.rig/traceback.txt` (checked before and after
   the run) and `harness/out/**/traceback.txt` do not exist — the engine did not raise
-  an unhandled exception at any point in the 2-cycle run.
-- **RSS was not measured on this run.** Every entry in `harness/out/rss.jsonl` has
-  `rss_bytes: 0`:
-  ```
-  {"cycle": 0, "rss_bytes": 0}
-  {"cycle": 1, "rss_bytes": 0}
-  {"cycle": 2, "rss_bytes": 0}
-  ```
-  `GetProcessMemoryInfo` returned a falsy/failing result under the SDK's bundled
-  Windows Python in this environment, so `_rss_bytes()` fell back to its documented
-  "not measured" value (0) rather than failing the run. `check.py`'s leak check only
-  evaluates when at least 4 non-zero measurements exist, so it did not fire here —
-  it is inconclusive, not passing. This is worth revisiting but is out of scope for
-  Task 7/8: the harness's contract is "0 means not measured", and it honored that.
+  an unhandled exception at any point in the 4-cycle run.
 
 Bottom line: this is **not** a first-switch crash or hang — the harness ran to
-completion, produced full observations for every requested cycle, and `check.py`
-correctly caught two distinct, real contamination bugs (`sys.modules` caching and
-unreset style state) exactly where Task 8's purge layer needs to target: module
-cache eviction and style/exception-state reset around the restart boundary.
+completion, produced full observations and real memory measurements for every
+requested cycle, and `check.py` correctly caught three distinct, real bugs:
+`sys.modules` caching, unreset style state, and genuine per-switch memory growth.
+Task 8's purge layer needs to target all three: module cache eviction, style/state
+reset, and releasing per-game resources (images, bytecode, style objects) around the
+restart boundary.
