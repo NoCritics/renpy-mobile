@@ -850,3 +850,82 @@ directory entry itself (`main.py` replaced an existing entry, not a new one).
   (not just its presence on disk) behaves the same on iOS as on the 200-switch desktop
   rig — this task proves the files reach the bundle unchanged, not that they execute
   correctly there. That is a device-testing question outside CI's reach.
+
+---
+
+# Task 5 — first device install (CONFIRMED WORKING)
+
+Installed via Sideloadly on a physical iPhone by the project owner, 2026-08-24. Developer
+mode enabled, developer certificate trusted. **The app launches and runs our shell layer.**
+
+Evidence is a photograph of the running app, kept at `logs/photo_2026-08-24_21-26-45.jpg`.
+Everything below is transcribed from that screen — it is device output, not a build-time
+inference.
+
+```
+VNPlayer shell is running
+alive for 7s
+Ren'Py 8.5.3.26051504
+Python 3.12.8
+platform: darwin
+basedir: /var/containers/Bundle/Application/436F2A24-EB7D-4517-8C7B-4A2E5B926939/VNPlayer.app/base
+logdir:  /var/containers/Bundle/Application/436F2A24-EB7D-4517-8C7B-4A2E5B926939/VNPlayer.app/base
+logdir writable: NO (PermissionError)
+home: /private/var/mobile/Containers/Data/Application/9894BE3B-E2B7-46B9-8F8D-29CC687A0EB6
+Documents exists: True
+vnshell: imported OK
+```
+
+## What this proves
+
+- **Milestone A's shell layer is portable.** `vnshell` imported on iOS from the same source
+  that runs the desktop rig, with no iOS-specific edit. That was the architecture's central
+  unproven claim and it is now evidence, not hypothesis.
+- **`alive for 7s` means the interaction loop is live**, not a single frame painted before a
+  hang. A static screen would have proven only that Ren'Py reached its first redraw.
+- The whole no-Mac, no-Developer-Program, no-secrets pipeline produces an artifact that
+  actually runs on hardware.
+
+## Measured facts that differ from what was recorded earlier
+
+1. **Python on iOS is 3.12.8**, not the 3.12.7 the desktop SDK ships. Both are 3.12, so
+   `create.py`'s `-lpython3.12` rewrite still matches `libpython3.12.a` — but the two
+   interpreters are not the same patch release, and anything that pins an exact patch
+   version would be wrong.
+2. **`sys.platform` is `darwin` on iOS, not `ios`.** Any future iOS detection must NOT use
+   `sys.platform`. Ren'Py's own mechanism is `renpy/__init__.py:167`:
+   `os.environ.get("RENPY_PLATFORM", "").startswith("ios")` sets `renpy.ios`. Use
+   `renpy.ios`.
+3. **The two container paths are different UUIDs**, as iOS intends: the read-only Bundle
+   container holds the app, and a separate writable Data container holds `~/Documents`.
+
+## Correction: `logdir writable: NO` is expected, and log.txt is not the log
+
+An earlier reading of this project concluded that `path_to_logdir()` returning the basedir
+was an iOS portability defect, because the bundle is read-only. The first half is right and
+the device confirms it. **The conclusion was wrong.**
+
+`renpy/log.py:79` reads:
+
+```python
+if renpy.ios:
+    self.file = real_stdout
+```
+
+On iOS Ren'Py deliberately never opens `log.txt` at all — every log line goes to **stdout**,
+which the renios shell routes to the iOS system log (`prototype/Log.m` wraps `NSLog`).
+Repointing `path_to_logdir` at `~/Documents` would therefore have fixed nothing: it would
+have changed a path that iOS builds do not use.
+
+**Consequence for diagnostics:** the log already exists and already leaves the process. It is
+read with a device-console tool over USB (`idevicesyslog`), not by retrieving a file. Writing
+an additional in-app log copy into `~/Documents` remains worthwhile — a reader with no PC to
+hand cannot run a console tool — but it is an enhancement, not a repair.
+
+## Still not measured on device
+
+- The ~22 MB-per-switch native memory leak. Spec §14 requires re-measurement using
+  `task_info(TASK_VM_INFO).phys_footprint`; nothing here does that. Milestone C.
+- Any real visual novel. `shell-project/` is two `.rpy` files; timings and footprint do not
+  generalize.
+- Touch input, orientation behaviour, and audio: unexercised by this screen.
