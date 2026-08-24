@@ -195,14 +195,21 @@ jobs:
           # so a regression (e.g. someone reordering the prune before the copy, or
           # removing it) fails the build instead of silently shipping mismatched
           # bytecode.
-          echo "=== confirming no __pycache__/*.pyc reached $IPA ==="
-          PYCACHE_MATCHES="$(printf '%s\n' "$LISTING" | grep -E "__pycache__|\.pyc$" || true)"
+          #
+          # Scoped to base/vnshell/ specifically, not the whole .ipa: Ren'Py's own
+          # stdlib under base/lib/python3.12/ legitimately ships precompiled *.pyc
+          # files (confirmed by this exact assertion failing loudly against them on
+          # the first attempt at this check, unscoped -- a real example of the guard
+          # doing its job and catching an overbroad condition before it shipped). Our
+          # exclusion requirement only ever applied to shell/vnshell/'s own cache.
+          echo "=== confirming no __pycache__/*.pyc reached $IPA under vnshell/ ==="
+          PYCACHE_MATCHES="$(printf '%s\n' "$LISTING" | grep "vnshell/" | grep -E "__pycache__|\.pyc$" || true)"
           if [ -n "$PYCACHE_MATCHES" ]; then
-            echo "ASSERT FAILED: __pycache__/*.pyc found in $IPA -- the overlay's prune step did not run or did not work:" >&2
+            echo "ASSERT FAILED: __pycache__/*.pyc found under vnshell/ in $IPA -- the overlay's prune step did not run or did not work:" >&2
             echo "$PYCACHE_MATCHES" >&2
             exit 1
           fi
-          echo "OK: no __pycache__/*.pyc anywhere in $IPA"
+          echo "OK: no __pycache__/*.pyc under vnshell/ anywhere in $IPA"
 
           echo "=== shell layer verified in $IPA ==="
 
