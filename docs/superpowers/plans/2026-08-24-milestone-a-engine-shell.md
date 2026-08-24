@@ -6,7 +6,7 @@
 
 **Architecture:** Ren'Py's desktop entry point `renpy.py` is explicitly a distributor customization module, and Ren'Py assigns it to `renpy.__main__`. On iOS the equivalent file is `base/main.py`, which we ship. We therefore write one `main.py` that works in both places: it overrides the documented `path_to_*` hooks, monkey-patches `renpy.bootstrap.get_alternate_base` to act as a pure "which game next" selector, and drives game switching through `UtterRestartException` inside Ren'Py's existing restart loop. A pluggable mailbox transport lets the same code be driven by a test harness on desktop and by Swift on iOS.
 
-**Tech Stack:** Ren'Py 8.5.3 SDK (bundled CPython 3.12.7), Python 3.12 `unittest` (stdlib only — no third-party test deps), Git Bash for scripts.
+**Tech Stack:** Ren'Py 8.5.3 SDK (bundled CPython 3.12.7, runs Ren'Py only), a system CPython 3.10+ for the `unittest` suite, stdlib only — no third-party deps anywhere. Git Bash for scripts.
 
 **Spec:** `docs/superpowers/specs/2026-08-24-renpy-ios-player-design.md`
 
@@ -39,7 +39,13 @@ building an iOS app on a false premise.
 - **No third-party Python dependencies.** Tests use stdlib `unittest`. The runtime uses
   only what the Ren'Py SDK already bundles. Anything else has to be vendored into an
   iOS static build later, which we are not doing.
-- **stdlib-only, Python 3.12 syntax.** The bundled interpreter is CPython 3.12.7.
+- **stdlib-only, Python 3.10+ syntax.** Two interpreters are in play and they are not
+  interchangeable. The Ren'Py SDK's bundled CPython 3.12.7 **runs Ren'Py** — its stdlib
+  is stripped and shipped as `.pyc` only, and it has no `unittest`, so it cannot run the
+  test suite. The unit tests therefore run under a system CPython (3.10+) selected by
+  `scripts/run_tests.sh`. This is safe because everything under test is pure stdlib with
+  no Ren'Py import at module scope. Never install packages into `vendor/` to bridge the
+  gap: that tree is checksum-verified and `fetch_deps.sh` deletes it on any repair.
 - **No network access at runtime.** Scripts may download the SDK; the shell layer may not.
 - **Working name is `VNPlayer`**; environment variables use the `VNPLAYER_` prefix.
   Renaming happens later and must be a single find-and-replace.
@@ -57,6 +63,7 @@ renpy-moile/
   docs/                            (research + spec already present)
   scripts/
     fetch_deps.sh                  download + SHA-256 verify the Ren'Py SDK
+    run_tests.sh                   run the unit suite on a system Python, not the SDK's
     make_rig.sh                    build .rig/ — an SDK copy with our overlay applied
     run_harness.sh                 one-command entry point for the cycling harness
   shell/                           THE DELIVERABLE — copied verbatim into base/ on iOS
@@ -318,7 +325,7 @@ git commit -m "chore: desktop rig builder mirroring the iOS bundle layout"
 ### Task 3: `main.py` — the distributor customization module
 
 **Files:**
-- Create: `shell/main.py`, `shell/vnshell/__init__.py`, `shell/vnshell/state.py`
+- Create: `scripts/run_tests.sh`, `shell/main.py`, `shell/vnshell/__init__.py`, `shell/vnshell/state.py`
 - Create: `shell-project/game/options.rpy`, `shell-project/game/script.rpy`
 - Test: `tests/test_paths.py`
 
@@ -379,15 +386,65 @@ if __name__ == "__main__":
     unittest.main()
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [ ] **Step 2: Write `scripts/run_tests.sh`**
+
+The Ren'Py SDK's bundled interpreter cannot run the suite: its stdlib is stripped and
+shipped as `.pyc` only, and `unittest` is absent entirely. Nothing under test imports
+Ren'Py at module scope, so any modern system CPython runs it. This wrapper finds one, so
+no later task has to guess — and so the failure mode when none exists is a clear message
+rather than a confusing `ModuleNotFoundError`.
+
+```bash
+#!/usr/bin/env bash
+# Runs the unit suite.
+#
+# Deliberately NOT vendor/renpy-8.5.3-sdk/lib/py3-windows-x86_64/python.exe: the SDK
+# ships a stripped, .pyc-only stdlib with no unittest module. That interpreter's job is
+# running Ren'Py. Everything under test here is pure stdlib with no Ren'Py import at
+# module scope, so a system CPython is both sufficient and correct.
+#
+# Never "fix" this by copying packages into vendor/: that tree is checksum-verified and
+# fetch_deps.sh deletes it wholesale on any repair, so the fix would silently vanish.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+find_python() {
+    for candidate in "${VNPLAYER_TEST_PYTHON:-}" python3 python py; do
+        [ -n "$candidate" ] || continue
+        command -v "$candidate" >/dev/null 2>&1 || continue
+        # Probe for real: Windows ships a `python3` shim that exits non-zero and
+        # advertises the Microsoft Store instead of running anything.
+        if "$candidate" -c 'import sys, unittest; sys.exit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+if ! PY="$(find_python)"; then
+    echo "No suitable Python found." >&2
+    echo "Need CPython 3.10+ with unittest on PATH, or set VNPLAYER_TEST_PYTHON." >&2
+    echo "The Ren'Py SDK's bundled interpreter cannot be used: stripped stdlib, no unittest." >&2
+    exit 1
+fi
+
+echo "Testing with: $("$PY" -c 'import sys; print(sys.executable, sys.version.split()[0])')"
+
+cd "$ROOT"
+exec "$PY" -m unittest discover -s tests -v "$@"
+```
+
+- [ ] **Step 3: Run the test to verify it fails**
 
 Run:
 ```bash
-vendor/renpy-8.5.3-sdk/lib/py3-windows-x86_64/python.exe -m unittest discover -s tests -v
+bash scripts/run_tests.sh
 ```
-Expected: FAIL — `ModuleNotFoundError: No module named 'main'`.
+Expected: the interpreter banner, then FAIL — `ModuleNotFoundError: No module named 'main'`.
 
-- [ ] **Step 3: Write `shell/vnshell/__init__.py`**
+- [ ] **Step 4: Write `shell/vnshell/__init__.py`**
 
 ```python
 """VNPlayer engine shell. Runs inside Ren'Py's embedded CPython."""
@@ -395,7 +452,7 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'main'`.
 __all__ = ["state", "mailbox", "transports", "lifecycle", "purge", "harness"]
 ```
 
-- [ ] **Step 4: Write `shell/vnshell/state.py`**
+- [ ] **Step 5: Write `shell/vnshell/state.py`**
 
 ```python
 """Process-wide switching state.
@@ -431,7 +488,7 @@ class State:
 STATE = State()
 ```
 
-- [ ] **Step 5: Write `shell/main.py`**
+- [ ] **Step 6: Write `shell/main.py`**
 
 This is adapted from the SDK's `renpy.py`, which carries the header *"Functions to be
 customized by distributors"*. We keep the functions Ren'Py requires, change the three
@@ -535,15 +592,15 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 6: Run the test to verify it passes**
+- [ ] **Step 7: Run the test to verify it passes**
 
 Run:
 ```bash
-vendor/renpy-8.5.3-sdk/lib/py3-windows-x86_64/python.exe -m unittest discover -s tests -v
+bash scripts/run_tests.sh
 ```
 Expected: 3 tests PASS.
 
-- [ ] **Step 7: Write the shell project**
+- [ ] **Step 8: Write the shell project**
 
 `shell-project/game/options.rpy`:
 
@@ -583,10 +640,10 @@ label idle:
     jump idle
 ```
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add shell/main.py shell/vnshell/__init__.py shell/vnshell/state.py \
+git add scripts/run_tests.sh shell/main.py shell/vnshell/__init__.py shell/vnshell/state.py \
         shell-project tests/test_paths.py
 git commit -m "feat: renpy.__main__ replacement with strict gamedir and per-game saves"
 ```
@@ -719,7 +776,7 @@ if __name__ == "__main__":
 
 Run:
 ```bash
-vendor/renpy-8.5.3-sdk/lib/py3-windows-x86_64/python.exe -m unittest discover -s tests -v
+bash scripts/run_tests.sh
 ```
 Expected: FAIL — `ModuleNotFoundError: No module named 'vnshell.transports'`.
 
@@ -847,7 +904,7 @@ MAILBOX = Mailbox(NullTransport())
 
 Run:
 ```bash
-vendor/renpy-8.5.3-sdk/lib/py3-windows-x86_64/python.exe -m unittest discover -s tests -v
+bash scripts/run_tests.sh
 ```
 Expected: all tests PASS (3 path + 4 transport + 4 mailbox = 11).
 
