@@ -19,9 +19,13 @@ class Command:
 
 
 class Mailbox:
+    # Faults are reported at most this many times per Mailbox, ever.
+    REPORT_LIMIT = 20
+
     def __init__(self, transport: Transport) -> None:
         self.transport = transport
         self._last_report: str | None = None
+        self._reports_emitted = 0
 
     def poll(self) -> list[Command]:
         """Return pending commands.
@@ -75,21 +79,39 @@ class Mailbox:
         return Command(name=str(name), args=args)
 
     def _report(self, message: str) -> None:
-        """Record a fault once.
+        """Record a fault, without ever becoming the problem itself.
 
         Silence is the dangerous failure here: a permanently broken command channel
         would otherwise present as "the buttons do nothing" with no trail at all. But
-        poll() runs every frame, so an unconditional print would emit sixty lines a
-        second for as long as the fault lasts. Consecutive identical messages are
-        therefore reported once. On iOS, stdout is already routed to the system log by
-        Ren'Py's iossupport module.
+        poll() runs every frame, so unconditional printing would emit sixty lines a
+        second for as long as the fault lasts.
+
+        Two throttles, because one is not enough. Suppressing consecutive duplicates
+        handles the common case, where a deterministic bug raises the same exception
+        every call. It does nothing for varied faults — a transport feeding back a
+        different malformed payload each frame produces a different message each
+        frame, since the message embeds the offending entry. The absolute cap covers
+        that, and every other variety we have not thought of.
+
+        On iOS, stdout is already routed to the system log by Ren'Py's iossupport
+        module, so print is the right primitive.
         """
 
         if message == self._last_report:
             return
 
         self._last_report = message
-        print(f"[vnshell] mailbox: {message}")
+
+        if self._reports_emitted >= self.REPORT_LIMIT:
+            return
+
+        self._reports_emitted += 1
+
+        if self._reports_emitted == self.REPORT_LIMIT:
+            print(f"[vnshell] mailbox: {message}")
+            print("[vnshell] mailbox: report limit reached, further faults suppressed")
+        else:
+            print(f"[vnshell] mailbox: {message}")
 
 
 MAILBOX = Mailbox(NullTransport())

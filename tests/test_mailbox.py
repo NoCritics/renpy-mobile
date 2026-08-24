@@ -56,6 +56,22 @@ class MailboxTests(unittest.TestCase):
         self.assertEqual(len(lines), 1)
         self.assertIn("device on fire", lines[0])
 
+    def test_varied_faults_stop_after_the_report_limit(self):
+        # Consecutive-duplicate suppression alone does not throttle varied faults:
+        # each malformed payload produces a different message. poll() runs every
+        # frame, so without an absolute cap this path prints ~60 lines a second.
+        batches = [[f"bad-payload-{i}"] for i in range(60)]
+        mb = Mailbox(FakeTransport(batches))
+        out = io.StringIO()
+
+        with contextlib.redirect_stdout(out):
+            for _ in range(60):
+                mb.poll()
+
+        lines = [l for l in out.getvalue().splitlines() if l.strip()]
+        self.assertEqual(len(lines), Mailbox.REPORT_LIMIT + 1)
+        self.assertIn("further faults suppressed", lines[-1])
+
     def test_non_dict_entry_does_not_raise(self):
         # Transport.receive()'s return type is a hint, not a guarantee: the iOS
         # bridge deserializes data we do not control. One bad entry must not raise,
