@@ -1,2 +1,13 @@
 .superpowers/
 .remember/
+vendor/
+.rig/
+harness/assets/
+harness/out/
+*.pyc
+__pycache__/
+.DS_Store
+saves/
+log.txt
+traceback.txt
+errors.txt
