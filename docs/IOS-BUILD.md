@@ -929,3 +929,85 @@ hand cannot run a console tool — but it is an enhancement, not a repair.
 - Any real visual novel. `shell-project/` is two `.rpy` files; timings and footprint do not
   generalize.
 - Touch input, orientation behaviour, and audio: unexercised by this screen.
+
+## Device log capture — findings from the first real capture
+
+`scripts/ios/device_log.sh` streams the device console over USB with `idevicesyslog`
+(libimobiledevice for Windows, `jrjr/libimobiledevice-windows` build). First capture:
+123,141 lines over 30 seconds, of which 1,515 came from our process.
+
+### Correction: Ren'Py's log IS emitted, but iOS redacts it
+
+An earlier note here said the engine's log "goes to stdout, which the renios shell routes
+to the iOS system log", and implied it would therefore be readable. The routing claim is
+correct; the readability implication was not.
+
+The capture shows 67 lines of the form:
+
+```
+Aug 24 21:44:13.591752 VNPlayer[748] <Notice>: <private>
+```
+
+Those are Ren'Py's log lines. `prototype/Log.m` is `NSLog(@"%s", s)`, and iOS's unified
+logging **redacts `%s` arguments as `<private>` by default**. The device is hiding the
+text, not failing to emit it — a distinction that matters, because the fix is a device
+setting, not a code change.
+
+Two ways to read the text, neither yet applied:
+
+1. **Install Apple's logging configuration profile** enabling private-data logging
+   (`com.apple.system.logging`, `Enable-Private-Data`). No code change, reversible by
+   removing the profile, and applies to any app.
+2. **Rewrite `Log.m`'s `%s` to `%{public}s` in the GENERATED project** — permitted under
+   the same ruling that lets us override the bundle identifier, since the generated tree
+   is our artifact and `vendor/` is untouched. But it would make *everything* Ren'Py logs
+   public, including which game is open, so it should not be the default for a reader
+   application. Debug configuration only, if at all.
+
+### Kernel-level confirmation that the shell layer imported
+
+```
+kernel(Sandbox)[0] <Error>: Sandbox: VNPlayer(791) deny(1) file-write-create
+  /private/var/containers/Bundle/Application/.../VNPlayer.app/base/vnshell/__pycache__
+```
+
+Python tried to write bytecode next to our modules and the read-only bundle refused it.
+This is independent evidence — from the kernel, not from our own diagnostic screen — that
+`import vnshell` really executed against the files we overlaid. Harmless: Python proceeds
+without caching. It does mean our `.py` sources are recompiled on every launch.
+
+### REAL BUG FOUND — saves cannot be written on iOS
+
+```
+Sandbox: VNPlayer(791) deny(1) file-write-create
+  .../VNPlayer.app/base/game/saves
+```
+
+`shell/main.py`'s `path_to_saves()` falls back to `os.path.join(gamedir, "saves")` when
+`STATE.saves_root` is unset. On iOS `gamedir` is inside the read-only bundle, so that
+fallback **cannot work** — the sandbox denies it outright.
+
+It did not surface as a visible failure here because the shell project saves nothing. It
+would surface the moment a real game tried to autosave or a reader tried to save.
+
+**This must be fixed in Milestone C**: `path_to_saves()` needs a writable base on iOS
+(the app's `Documents` or `Library` directory in the Data container, which the device
+confirmed exists at `/private/var/mobile/Containers/Data/Application/<uuid>/Documents`).
+Recorded here rather than patched now because the shell layer is under a
+ships-unchanged constraint for Milestone B, and this is exactly the kind of finding that
+constraint exists to surface rather than bury.
+
+Also observed and benign: `deny(1) process-fork` (iOS forbids fork; nothing depends on
+it), `deny(1) sysctl-read kern.bootargs`, and the denial of the write probe our own
+diagnostic screen deliberately attempts.
+
+### A script bug worth recording, because it is the third of its kind
+
+The first version of the summary step ran `grep ... | head -40 || echo "(none matched)"`.
+Under `set -o pipefail`, `head` closing the pipe sends `grep` SIGPIPE, the pipeline
+reports failure, and the fallback printed **"(none matched)" over a capture containing
+1,515 matching lines**. Fixed by using `grep -m N` instead of a pipe to `head`.
+
+This is the same `grep`/`head`-under-`pipefail` trap raised in the Task 1 and Task 4
+reviews. Three occurrences in one milestone: treat any `| head` inside a `pipefail` script
+as a defect on sight.

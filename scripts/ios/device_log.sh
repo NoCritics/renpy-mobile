@@ -70,6 +70,33 @@ if ! "$IDEVICE_ID" -l 2>/dev/null | grep -q .; then
     exit 1
 fi
 
+# Pull out the parts of a 100k-line system-wide capture that are actually ours.
+#
+# Note on `grep -m` rather than `grep | head`: under `set -o pipefail`, head closing the
+# pipe early sends grep SIGPIPE, the pipeline reports failure, and any `|| echo "none"`
+# fallback then prints a flat lie about a grep that in fact matched plenty. That exact
+# bug shipped in an earlier version of this script and reported "(none matched)" over a
+# capture containing 1,515 matching lines.
+summarize_capture() {
+    local out="$1"
+
+    echo
+    echo "=== Ren'Py's own output (NSLog via renios prototype/Log.m) ==="
+    echo "NOTE: iOS redacts NSLog arguments as <private> unless private-data logging is"
+    echo "      enabled on the device. Lines below appearing as <private> ARE Ren'Py's"
+    echo "      log; the device is hiding the text, not failing to emit it."
+    grep -m 20 -E "^[A-Za-z]{3} [0-9]{2} [0-9:.]+ VNPlayer\[[0-9]+\]" "$out" || echo "(none)"
+
+    echo
+    echo "=== sandbox denials (what the app tried to do and could not) ==="
+    # These are gold: they show real filesystem attempts the read-only bundle refused.
+    grep -E "Sandbox: VNPlayer" "$out" | sed -E 's/.*deny\(1\) //' | sort | uniq -c | sort -rn || echo "(none)"
+
+    echo
+    echo "=== crashes, jetsam kills and terminations ==="
+    grep -m 20 -iE "VNPlayer.*(crash|jetsam|terminat|killed|exhausted|exception)" "$out" || echo "(none)"
+}
+
 mkdir -p "$LOGS"
 OUT="$LOGS/device.log"
 
@@ -95,9 +122,7 @@ if [ -n "$SECONDS_TO_CAPTURE" ]; then
     fi
 
     echo "Captured $(wc -l < "$OUT") lines."
-    echo
-    echo "=== lines mentioning VNPlayer, Ren'Py or Python ==="
-    grep -iE "vnplayer|renpy|python|vnshell" "$OUT" | head -40 || echo "(none matched)"
+    summarize_capture "$OUT"
 else
     echo "Streaming until Ctrl-C..."
     "$SYSLOG" --no-colors -o "$OUT_ARG"
