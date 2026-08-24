@@ -41,19 +41,16 @@ Notes:
 
 ## Harness baseline
 
-Recorded after running `bash scripts/run_harness.sh 4` (Milestone A, Task 7, corrected
-run). This is the **expected first failure** — there is no purge layer yet (Task 8
-builds one), and this run's output is exactly the evidence Task 8 is derived from. A
-PASS at this step would have been the surprising result.
+Recorded after running `bash scripts/run_harness.sh 4` (Milestone A, Task 7, second
+correction). There is no purge layer yet (Task 8 builds one); a PASS at this step
+would have been the surprising result. This section supersedes the two earlier
+baselines recorded during this task, both of which turned out to have instrumentation
+problems of their own — see "History of this baseline" at the bottom for the full
+trail, since Task 8 should understand what changed and why.
 
-An earlier 2-cycle run of this same harness reported `rss_bytes: 0` for every sample
-because `GetCurrentProcess()` was called without declaring `restype`; ctypes defaults
-that to `c_int`, which truncates the 64-bit pseudo-handle and makes
-`GetProcessMemoryInfo` fail silently. `check.py` also treated an all-zero RSS log as
-"nothing to check" rather than a failure, so a broken probe could have produced a
-false PASS on the memory-growth check. Both were fixed (see `shell/vnshell/harness.py`
-`_rss_bytes()` and `harness/check.py`'s RSS section) and the harness was re-run with
-4 cycles, below, so the memory check would have enough samples to be meaningful.
+**The style-bleed question is currently unanswered — the new canary is broken too.**
+See the interpretation below. Do not read either of the earlier baselines as settling
+whether style state bleeds between games; neither instrument was trustworthy.
 
 Command and outcome:
 
@@ -67,86 +64,115 @@ Resetting cache.
 Resetting cache.
 Resetting cache.
 Engine exited cleanly.
+FAIL: cycle 0: game A reports text size 22, expected 137 — the style canary itself is broken, so any style-bleed verdict below is meaningless
 FAIL: cycle 1: game B read sentinel 'A', expected 'B' — sys.modules contamination
-FAIL: cycle 1: game B inherited game A's font 'DejaVuSans.ttf' — style bleed
+FAIL: cycle 2: game A reports text size 22, expected 137 — the style canary itself is broken, so any style-bleed verdict below is meaningless
 FAIL: cycle 3: game B read sentinel 'A', expected 'B' — sys.modules contamination
-FAIL: cycle 3: game B inherited game A's font 'DejaVuSans.ttf' — style bleed
-FAIL: memory grew from 185.4 MB to 260.9 MB over 5 cycles — leak
+FAIL: memory grew from 184.3 MB to 260.3 MB over 5 cycles — leak
 ```
 
-Overall script exit status: **1** (non-zero, from `check.py`). The engine process
-itself exited **cleanly with status 0** — it ran the full requested cycle count and
-called `sys.exit(0)` from `vnshell.harness.advance()` once `cycle > _total_cycles()`.
-The failure is not a crash or a hang: the engine ran to completion and all five
-`FAIL:` lines above came from `check.py` inspecting the resulting observations.
+Overall script exit status: **1** (from `check.py`). Engine process exit status:
+**0** ("Engine exited cleanly.") — not a crash, hang, or timeout. All five `FAIL:`
+lines came from `check.py` inspecting real, complete observations.
 
-Cycles: `harness/out/cycle.txt` contains `5` after the run (4 requested + 1, since the
-counter is incremented past the last real launch before the run recognizes it should
-stop and exits). All 4 requested game launches (A, B, A, B) completed and each
-produced one observation record — the run did not stop early.
+Cycles: `harness/out/cycle.txt` contains `5` (4 requested + 1, the same
+off-by-one-at-completion behavior as prior runs — the counter increments past the
+final launch before `advance()` recognizes it should stop). All 4 requested launches
+(A, B, A, B) completed and produced one observation record each.
 
-`harness/out/observations.jsonl`, verbatim, in full (4 lines, one per cycle):
+`harness/out/observations.jsonl`, verbatim, in full:
 
 ```
-{"game": "A", "sentinel_value": "A", "font": "DejaVuSans.ttf", "saves_dir": "C:/Users/user/source/repos/workstation/renpy-moile/harness/out/saves/game_a", "leaked_store_var": null}
-{"game": "B", "sentinel_value": "A", "font": "DejaVuSans.ttf", "saves_dir": "C:/Users/user/source/repos/workstation/renpy-moile/harness/out/saves/game_b", "leaked_store_var": null}
-{"game": "A", "sentinel_value": "A", "font": "DejaVuSans.ttf", "saves_dir": "C:/Users/user/source/repos/workstation/renpy-moile/harness/out/saves/game_a", "leaked_store_var": null}
-{"game": "B", "sentinel_value": "A", "font": "DejaVuSans.ttf", "saves_dir": "C:/Users/user/source/repos/workstation/renpy-moile/harness/out/saves/game_b", "leaked_store_var": null}
+{"game": "A", "sentinel_value": "A", "default_size": 22, "saves_dir": "C:/Users/user/source/repos/workstation/renpy-moile/harness/out/saves/game_a", "leaked_store_var": null}
+{"game": "B", "sentinel_value": "A", "default_size": 22, "saves_dir": "C:/Users/user/source/repos/workstation/renpy-moile/harness/out/saves/game_b", "leaked_store_var": null}
+{"game": "A", "sentinel_value": "A", "default_size": 22, "saves_dir": "C:/Users/user/source/repos/workstation/renpy-moile/harness/out/saves/game_a", "leaked_store_var": null}
+{"game": "B", "sentinel_value": "A", "default_size": 22, "saves_dir": "C:/Users/user/source/repos/workstation/renpy-moile/harness/out/saves/game_b", "leaked_store_var": null}
 ```
 
-`harness/out/rss.jsonl`, verbatim, in full — now real, non-zero readings:
+`harness/out/rss.jsonl`, verbatim, in full:
 
 ```
-{"cycle": 0, "rss_bytes": 135950336}
-{"cycle": 1, "rss_bytes": 185401344}
-{"cycle": 2, "rss_bytes": 212320256}
-{"cycle": 3, "rss_bytes": 234242048}
-{"cycle": 4, "rss_bytes": 260939776}
+{"cycle": 0, "rss_bytes": 135766016}
+{"cycle": 1, "rss_bytes": 184299520}
+{"cycle": 2, "rss_bytes": 211853312}
+{"cycle": 3, "rss_bytes": 233037824}
+{"cycle": 4, "rss_bytes": 260317184}
 ```
 
-In decimal MB (bytes / 1e6, matching `check.py`'s own arithmetic): 136.0 → 185.4 →
-212.3 → 234.2 → 260.9 MB across the 5 samples (cycle 0 through cycle 4). `check.py`
-compares `measured[1]` (185,401,344 bytes ≈ 185.4 MB, the reading after the first
-switch) against `measured[-1]` (260,939,776 bytes ≈ 260.9 MB, the reading after the
-fourth): a **40.7% increase** over 4 game switches, against the 30% growth ceiling —
-a genuine, measured leak, not a probe artifact.
+In decimal MB (bytes / 1e6): 135.8, 184.3, 211.9, 233.0, 260.3.
 
-Interpretation:
+No traceback file was produced (`.rig/traceback.txt` and `harness/out/**/traceback.txt`
+both checked before and after the run; both absent).
 
-- **`sys.modules` contamination, confirmed as predicted, on every A→B switch.** Both
-  times game B loaded (cycle 1 and cycle 3), its `sentinel` module import resolved to
-  the cached module object from game A's earlier import (both are named `sentinel`
-  and `sys.path` was never cleaned between launches), so `sentinel.VALUE` read `"A"`
-  instead of `"B"`. This reproduced identically on both A→B transitions, not just the
-  first — it is not a one-off startup artifact.
-- **Style bleed, on every A→B switch.** Game B's `style.default.font` came back as
-  `'DejaVuSans.ttf'` — the value game A's script explicitly set
-  (`$ style.default.font = "DejaVuSans.ttf"`) — instead of Ren'Py's default, both
-  times. Style state was not reset by `renpy.reload_all()` / the restart loop.
-- **Real memory growth, now correctly measured and correctly caught.** Working set
-  grew monotonically every single cycle (each switch is a net increase, not just an
-  end-to-end comparison): 136.0 → 185.4 → 212.3 → 234.2 → 260.9 MB. This is consistent
-  with each switch accumulating rather than releasing per-game state (loaded images,
-  cached `.rpyc` bytecode, style objects, etc.) — exactly the class of failure that
-  becomes a Jetsam kill on iOS if uncorrected. Task 8's purge layer needs to address
-  this, not just the two contamination bugs above.
-- **Store variables were *not* contaminated.** `leaked_store_var` is `null` for both
-  game B observations, even though game A's script sets `game_a_marker = "leaked"` in
-  its store both times. Unlike `sys.modules`, style state, and process memory, the
-  Ren'Py store itself does appear to be cleared across the restart. `check.py`'s
-  store-leak assertion did not fire.
-- **Save directories stayed correctly isolated.** No "games share a save directory"
-  or "save dir moved between launches" failure fired across all 4 launches;
-  `saves_dir` for game A and game B are distinct, stable paths under
-  `VNPLAYER_SAVES_ROOT`, as `main.py:path_to_saves` intends.
-- **No traceback file was produced.** `.rig/traceback.txt` (checked before and after
-  the run) and `harness/out/**/traceback.txt` do not exist — the engine did not raise
-  an unhandled exception at any point in the 4-cycle run.
+### Interpretation
 
-Bottom line: this is **not** a first-switch crash or hang — the harness ran to
-completion, produced full observations and real memory measurements for every
-requested cycle, and `check.py` correctly caught three distinct, real bugs:
-`sys.modules` caching, unreset style state, and genuine per-switch memory growth.
-Task 8's purge layer needs to target all three: module cache eviction, style/state
-reset, and releasing per-game resources (images, bytecode, style objects) around the
-restart boundary.
+- **The style-size canary is broken, and this run stops short of a bleed verdict.**
+  Game A's own observation reads `default_size: 22` in *both* of its launches (cycle
+  0 and cycle 2) — never `137`, despite `script.rpy` setting
+  `$ style.default.size = 137` immediately before `observe("A")` runs. `check.py`'s
+  new canary-integrity assertion (`game A reports text size 22, expected 137 — the
+  style canary itself is broken`) fired both times, exactly as it was designed to.
+  This means **the style-bleed question remains unanswered**: game B also reads 22,
+  but since game A's own marker never took effect, B reading 22 is uninformative —
+  it is equally consistent with "styles reset cleanly" and with "the assignment
+  mechanism itself doesn't do what the canary assumes," and this run cannot
+  distinguish the two. This is a real, reproducible instrumentation failure (both A
+  launches, 100% of the time), not a fluke. The likely mechanism — offered as a
+  hypothesis, not a verified fact, since the `Style` class ships compiled in this SDK
+  and was not inspected at the source level — is that a runtime property assignment
+  on `style.default` is not guaranteed to be visible to an immediate same-statement
+  read-back; Ren'Py's style system is known to defer some rebuild work to the next
+  screen interaction, and `observe()` runs before any interaction occurs in the
+  label. This needs further investigation before a style-based canary can be trusted
+  for Task 8.
+- **`sys.modules` contamination, still real and reproduced on every A→B switch.**
+  Both times game B loaded (cycle 1 and cycle 3), `sentinel.VALUE` read `"A"` instead
+  of `"B"` — unaffected by the canary swap, since this check reads a plain Python
+  module attribute, not a style property.
+- **Real, monotonic memory growth, still real.** 135.8 → 184.3 → 211.9 → 233.0 →
+  260.3 MB across the 5 samples — a 41.2% increase from the reading after the first
+  switch to the reading after the fourth, against the 30% ceiling. Consistent with
+  the previous run's finding within measurement noise.
+- **Store variables were still not contaminated**, and **save directories stayed
+  correctly isolated** — same as every prior run of this harness.
+
+### Bottom line
+
+Two of the three previously-suspected purge targets remain confirmed and actionable
+for Task 8: **`sys.modules` caching** and **per-switch memory growth**. The third —
+style state — is **not yet known**, because both style-based canaries built so far
+have turned out to be non-discriminating: the font canary, because Ren'Py's own
+engine default matches the value the "contaminated" reading would show; the
+text-size canary, because the marker assignment itself doesn't reliably reach the
+same-statement read-back that would prove it took effect. Task 8 should not assume
+style state either bleeds or doesn't; treat it as an open question requiring a
+working canary, not a settled finding.
+
+### History of this baseline
+
+This section has been rewritten twice since Task 7 first ran the harness. Recorded
+here so Task 8 has the full trail rather than just the current conclusion:
+
+1. **First run** (`bash scripts/run_harness.sh 2`): reported `sys.modules`
+   contamination and a "style bleed" via a `style.default.font` check. RSS was not
+   measured at all (`GetProcessMemoryInfo` failed silently due to a 64-bit handle
+   truncation bug in `_rss_bytes()`), and `check.py` at the time silently skipped the
+   memory-growth check when nothing was measured — a false-negative risk.
+2. **Second run** (`bash scripts/run_harness.sh 4`, after fixing the RSS probe):
+   confirmed real, monotonic memory growth (40.7% over 4 switches) for the first
+   time, and `check.py` was changed to fail loudly instead of skipping when RSS is
+   unmeasured. The font-based "style bleed" finding from run 1 was subsequently
+   determined to be a **false positive**: `renpy/common/00style.rpy:139` sets
+   `font "DejaVuSans.ttf"` as the engine-wide default for *every* game, so a
+   font-based canary reports "bleed" even on a perfectly clean reset — it cannot
+   distinguish contamination from Ren'Py's own baseline. Game A's `script.rpy` also
+   set the font *after* calling `observe("A")`, so game A's own record never proved
+   the marker had taken effect in the first place.
+3. **This run** (third, current): replaced the font canary with a text-size canary
+   (`style.default.size`, engine default 22, game A sets 137 *before* observing) and
+   added the canary-integrity assertion that this write-up is built around. That
+   assertion immediately caught that the new canary is *also* not discriminating —
+   for a different reason (the marker assignment doesn't take effect in time for
+   game A's own read) — which is exactly what the canary-integrity check exists to
+   catch. The `sys.modules` and memory-growth findings carried forward unchanged and
+   were reconfirmed on this run's own data.

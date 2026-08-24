@@ -7,7 +7,11 @@ import os
 import sys
 
 OUT = os.path.join(os.path.dirname(__file__), "out")
-EXPECTED = {"game_a": "A", "game_b": "B"}
+# Ren'Py's engine-wide default, from renpy/common/00style.rpy:142. Game A overrides it
+# to GAME_A_TEXT_SIZE; a clean game B must read the default back.
+RENPY_DEFAULT_TEXT_SIZE = 22
+GAME_A_TEXT_SIZE = 137
+
 RSS_GROWTH_LIMIT = 1.30  # last cycle may not exceed the first by more than 30%
 
 
@@ -39,9 +43,17 @@ def main() -> None:
                 f"expected {expected!r} — sys.modules contamination"
             )
 
-        if game == "B" and record["font"] != "None" and "DejaVu" in record["font"]:
+        if game == "A" and record["default_size"] != GAME_A_TEXT_SIZE:
             failures.append(
-                f"cycle {i}: game B inherited game A's font {record['font']!r} — style bleed"
+                f"cycle {i}: game A reports text size {record['default_size']}, expected "
+                f"{GAME_A_TEXT_SIZE} — the style canary itself is broken, so any "
+                "style-bleed verdict below is meaningless"
+            )
+
+        if game == "B" and record["default_size"] != RENPY_DEFAULT_TEXT_SIZE:
+            failures.append(
+                f"cycle {i}: game B has text size {record['default_size']}, expected the "
+                f"engine default {RENPY_DEFAULT_TEXT_SIZE} — style bleed from game A"
             )
 
         if game == "B" and record["leaked_store_var"] is not None:
