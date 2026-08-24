@@ -188,3 +188,258 @@ conclusion:
    style state, which remains completely untested. The `sys.modules` and
    memory-growth findings carried forward unchanged and were reconfirmed on this
    run's own data, as they have been on every run in this history.
+
+## Purge findings
+
+Recorded after Milestone A, Task 8 (`shell/vnshell/purge.py`, wired into
+`shell/vnshell/lifecycle.py:select_next_basedir`). This section is the empirical answer
+to what between-game cleanup is actually required, as opposed to what the task brief
+hypothesized might be required. Both halves — what proved necessary and what was tried
+and discarded — are recorded, per the task's own instruction that a step nobody can
+justify is a liability for the iOS plan.
+
+### Necessary: purging `sys.modules` and `sys.path` under the previous game's `game/` dir
+
+This is the only step that measurably fixed a reported failure. Before it existed, the
+harness baseline (`## Harness baseline` above) showed game B reading game A's cached
+`sentinel.VALUE` (`"A"` instead of `"B"`) on both A→B switches. After wiring in
+`purge._purge_modules`, four separate 4-cycle harness runs (the correction below, plus
+three more while testing memory candidates) each showed zero `sys.modules`-contamination
+failures, and the 100-cycle run at the bottom of this section confirmed it holds over 50
+A→B switches, not just 2.
+
+**A real bug was found and fixed while wiring this in, worth recording in detail.** The
+brief's own `purge_engine_state` code purges everything under `previous_basedir` itself.
+That is wrong for the *first* switch of every run: the shell project's own basedir, per
+`shell/main.py:path_to_renpy_base`, is the directory `main.py` lives in — which the rig
+places at the SDK root (`.rig/`) and which iOS will place at the app bundle root. That
+root also holds `renpy/` (the engine), the interpreter's own standard library, and
+`vnshell/` itself. Purging "everything under the previous basedir" on the first
+shell→game switch therefore purged the running interpreter out from under itself:
+
+```
+$ bash scripts/run_harness.sh 4
+...
+[vnshell] purge: purged 330 modules: __future__, __main__, ..., re, ...,
+renpy, renpy.bootstrap, ..., vnshell, vnshell.lifecycle, vnshell.purge, ...
+...
+ModuleNotFoundError: No module named '__main__'
+...
+Engine exited with status 1 (expected 0).
+FAIL: .../observations.jsonl missing — the run did not produce output
+```
+
+It also stripped the SDK root from `sys.path` (`sys.path[:] = [p for p in sys.path if
+not os.path.abspath(p).startswith(root)]`, with `root == previous_basedir`), which would
+have broken any subsequent import from the engine's own tree even if the module purge
+itself had not already crashed the process.
+
+The fix: scope the purge to `<previous_basedir>/game`, not `previous_basedir` itself.
+This matches how code actually loads — `main.py:path_to_gamedir` requires a strict
+`game/` subdirectory, and every observed game does `sys.path.insert(0,
+renpy.config.gamedir)` where `gamedir == basedir/game` — so scoping to `game/` is not a
+weaker version of the brief's approach, it is the *correct* scope the brief's own
+reasoning (about `utils.py` collisions) already implied. After the fix:
+
+```
+$ bash scripts/run_harness.sh 4
+...
+[vnshell] purge: purged 1 modules: sentinel
+...
+Engine exited cleanly.
+FAIL: memory grew from 185.3 MB to 261.2 MB over 5 cycles — leak
+```
+
+`sys.modules` contamination: gone. Only the pre-existing memory-growth failure remained.
+
+### Tried and found unnecessary: five candidates for the memory-growth failure
+
+Each was added alone to `purge_engine_state`, run through `bash scripts/run_harness.sh
+4`, and compared against the module-purge-only baseline (185.3 MB → 261.2 MB, +40.9%
+over 5 samples). None moved the result outside run-to-run noise (~1 MB on a ~260 MB
+process), and none flipped the check from FAIL to PASS, alone or in combination:
+
+| Candidate | Result | End RSS (4-cycle run) |
+|---|---|---|
+| `renpy.display.im.cache.clear()` | ran cleanly, no measurable effect | 261.1 MB |
+| `renpy.text.font.free_memory()` | ran cleanly, no measurable effect | 261.2 MB |
+| `gc.collect()` | ran cleanly, freed ~9,700 objects every switch, no measurable effect on RSS | 259.2 MB |
+| `renpy.display.render.free_memory()` | **always raised** `AttributeError: 'NoneType' object has no attribute 'surftree'` | n/a (step failed every time) |
+| `renpy.audio.music.stop(...)` | **always raised** `IndexError: list index out of range` | n/a (step failed every time) |
+| `renpy.display.video.movie_stop(...)` | **always raised** `IndexError: list index out of range` | n/a (step failed every time) |
+| all three non-failing candidates combined (image cache + font cache + gc.collect) | ran cleanly | 260.5 MB |
+
+The three that always raised are not "broken" in the sense of a bug to fix — they fail
+because `select_next_basedir` runs *before* Ren'Py has (re)created its rendering
+interface and audio/video subsystems for the next pass through the restart loop
+(`renpy.game.interface` is `None` at this point). There is currently no Python-level
+hook available to this module, between passes of the bootstrap restart loop, at which
+those subsystems exist and can be asked to free memory. All three failed defensively —
+they were caught, logged as `failed: ...`, and did not crash the switch — which is
+exactly the behavior the brief required of every step.
+
+None of the five are in `shell/vnshell/purge.py`. Keeping them would have been
+speculative cleanup in a path that runs between every game switch, with measured
+evidence that they do not fix the failure they were added for.
+
+### Full harness: `bash scripts/run_harness.sh 100`
+
+```
+Running 100 cycles (timeout 560s)...
+...
+Engine exited cleanly.
+FAIL: memory grew from 185.2 MB to 2359.6 MB over 101 cycles — leak
+```
+
+**Not a PASS.** `sys.modules` contamination and store-variable leakage both held clean
+over all 100 launches (50 A→B and 50 B→A switches) — checked directly against
+`harness/out/observations.jsonl`: 100 records, zero contamination, zero store leaks,
+save directories stayed isolated throughout. The engine exited cleanly (status 0); this
+was not a crash, hang, or timeout. The only failure is memory growth, and at 100 cycles
+it is severe and clearly unbounded, not noise: **135.6 MB → 2,359.6 MB**, growing
+essentially linearly at roughly **22 MB per switch**, with no sign of a plateau across
+the full run. `RSS_GROWTH_LIMIT` (1.30, i.e. 30%) was left untouched, as instructed —
+this is a real finding, not an instrument to relax.
+
+Full growth curve, `harness/out/rss.jsonl`, verbatim (bytes; MB in the table below the
+raw data):
+
+```
+{"cycle": 0, "rss_bytes": 135618560}
+{"cycle": 1, "rss_bytes": 185204736}
+{"cycle": 2, "rss_bytes": 212570112}
+{"cycle": 3, "rss_bytes": 234385408}
+{"cycle": 4, "rss_bytes": 260939776}
+{"cycle": 5, "rss_bytes": 286490624}
+{"cycle": 6, "rss_bytes": 305758208}
+{"cycle": 7, "rss_bytes": 332140544}
+{"cycle": 8, "rss_bytes": 349581312}
+{"cycle": 9, "rss_bytes": 371269632}
+{"cycle": 10, "rss_bytes": 396947456}
+{"cycle": 11, "rss_bytes": 414674944}
+{"cycle": 12, "rss_bytes": 440950784}
+{"cycle": 13, "rss_bytes": 462299136}
+{"cycle": 14, "rss_bytes": 489136128}
+{"cycle": 15, "rss_bytes": 507383808}
+{"cycle": 16, "rss_bytes": 528654336}
+{"cycle": 17, "rss_bytes": 555425792}
+{"cycle": 18, "rss_bytes": 572993536}
+{"cycle": 19, "rss_bytes": 595329024}
+{"cycle": 20, "rss_bytes": 612241408}
+{"cycle": 21, "rss_bytes": 638812160}
+{"cycle": 22, "rss_bytes": 655618048}
+{"cycle": 23, "rss_bytes": 677007360}
+{"cycle": 24, "rss_bytes": 703782912}
+{"cycle": 25, "rss_bytes": 721981440}
+{"cycle": 26, "rss_bytes": 747966464}
+{"cycle": 27, "rss_bytes": 765652992}
+{"cycle": 28, "rss_bytes": 790827008}
+{"cycle": 29, "rss_bytes": 808652800}
+{"cycle": 30, "rss_bytes": 830353408}
+{"cycle": 31, "rss_bytes": 856289280}
+{"cycle": 32, "rss_bytes": 874168320}
+{"cycle": 33, "rss_bytes": 900239360}
+{"cycle": 34, "rss_bytes": 919044096}
+{"cycle": 35, "rss_bytes": 944783360}
+{"cycle": 36, "rss_bytes": 962707456}
+{"cycle": 37, "rss_bytes": 983916544}
+{"cycle": 38, "rss_bytes": 1010143232}
+{"cycle": 39, "rss_bytes": 1028898816}
+{"cycle": 40, "rss_bytes": 1050378240}
+{"cycle": 41, "rss_bytes": 1072832512}
+{"cycle": 42, "rss_bytes": 1097936896}
+{"cycle": 43, "rss_bytes": 1115660288}
+{"cycle": 44, "rss_bytes": 1137414144}
+{"cycle": 45, "rss_bytes": 1162506240}
+{"cycle": 46, "rss_bytes": 1180536832}
+{"cycle": 47, "rss_bytes": 1207009280}
+{"cycle": 48, "rss_bytes": 1224351744}
+{"cycle": 49, "rss_bytes": 1250557952}
+{"cycle": 50, "rss_bytes": 1267929088}
+{"cycle": 51, "rss_bytes": 1289342976}
+{"cycle": 52, "rss_bytes": 1314279424}
+{"cycle": 53, "rss_bytes": 1333768192}
+{"cycle": 54, "rss_bytes": 1360379904}
+{"cycle": 55, "rss_bytes": 1378471936}
+{"cycle": 56, "rss_bytes": 1404399616}
+{"cycle": 57, "rss_bytes": 1421758464}
+{"cycle": 58, "rss_bytes": 1443614720}
+{"cycle": 59, "rss_bytes": 1470263296}
+{"cycle": 60, "rss_bytes": 1487073280}
+{"cycle": 61, "rss_bytes": 1513455616}
+{"cycle": 62, "rss_bytes": 1530929152}
+{"cycle": 63, "rss_bytes": 1556578304}
+{"cycle": 64, "rss_bytes": 1573982208}
+{"cycle": 65, "rss_bytes": 1595822080}
+{"cycle": 66, "rss_bytes": 1622609920}
+{"cycle": 67, "rss_bytes": 1640058880}
+{"cycle": 68, "rss_bytes": 1665409024}
+{"cycle": 69, "rss_bytes": 1682960384}
+{"cycle": 70, "rss_bytes": 1709240320}
+{"cycle": 71, "rss_bytes": 1727254528}
+{"cycle": 72, "rss_bytes": 1748045824}
+{"cycle": 73, "rss_bytes": 1774465024}
+{"cycle": 74, "rss_bytes": 1791823872}
+{"cycle": 75, "rss_bytes": 1817636864}
+{"cycle": 76, "rss_bytes": 1835196416}
+{"cycle": 77, "rss_bytes": 1860886528}
+{"cycle": 78, "rss_bytes": 1878220800}
+{"cycle": 79, "rss_bytes": 1900138496}
+{"cycle": 80, "rss_bytes": 1925771264}
+{"cycle": 81, "rss_bytes": 1943101440}
+{"cycle": 82, "rss_bytes": 1968459776}
+{"cycle": 83, "rss_bytes": 1986142208}
+{"cycle": 84, "rss_bytes": 2012585984}
+{"cycle": 85, "rss_bytes": 2029547520}
+{"cycle": 86, "rss_bytes": 2051416064}
+{"cycle": 87, "rss_bytes": 2076782592}
+{"cycle": 88, "rss_bytes": 2094854144}
+{"cycle": 89, "rss_bytes": 2121089024}
+{"cycle": 90, "rss_bytes": 2142744576}
+{"cycle": 91, "rss_bytes": 2168299520}
+{"cycle": 92, "rss_bytes": 2186878976}
+{"cycle": 93, "rss_bytes": 2208415744}
+{"cycle": 94, "rss_bytes": 2230251520}
+{"cycle": 95, "rss_bytes": 2246914048}
+{"cycle": 96, "rss_bytes": 2273529856}
+{"cycle": 97, "rss_bytes": 2294644736}
+{"cycle": 98, "rss_bytes": 2320306176}
+{"cycle": 99, "rss_bytes": 2338021376}
+{"cycle": 100, "rss_bytes": 2359607296}
+```
+
+Every 10th sample in MB (bytes / 1e6), to make the shape legible without scanning all
+101 rows: cycle 0: 135.6, 10: 396.9, 20: 612.2, 30: 830.4, 40: 1050.4, 50: 1267.9,
+60: 1487.1, 70: 1709.2, 80: 1925.8, 90: 2142.7, 100: 2359.6. The per-cycle delta is
+consistently in the 17–27 MB range throughout the run (mean ≈ 22.2 MB/cycle) — this is
+not front-loaded and not tapering off by cycle 100; a longer run would be expected to
+keep climbing at roughly the same rate.
+
+### Bottom line for Task 8
+
+- **`sys.modules`/`sys.path` contamination: fixed**, confirmed over 100 launches (50
+  A→B, 50 B→A), zero failures.
+- **Store-variable leakage and save-directory isolation: still clean**, as at the Task 7
+  baseline — unaffected by this task, reconfirmed over 100 launches.
+- **Memory growth: not fixed, and not a purge-layer problem.** Every Python-level cache
+  reachable from `select_next_basedir` (image cache, font cache, forced GC) was tried
+  and made no measurable difference; the three caches that plausibly hold the actual
+  leaked memory (render tree, audio, video) are not reachable from this hook point at
+  all, because their owning subsystem does not exist yet on this pass. The growth is
+  linear and shows no sign of slowing over 100 cycles — this rules out a one-time
+  fixed-size leak (e.g. from the crashed first run's cleanup) and points to something
+  that reallocates roughly constant-sized state every single switch without releasing
+  the old copy — most likely at the Ren'Py C/SDL level (surfaces, GL objects, or similar
+  native display resources tied to `renpy.game.interface`, which is recreated fresh on
+  every pass through the restart loop) rather than in ordinary Python heap the GC can
+  reach.
+- **Consequence for the iOS plan:** as specified in the milestone brief, unbounded
+  ~22 MB/switch growth is exactly the shape of failure that becomes a Jetsam kill on
+  iOS. The iOS app cannot currently switch games freely for an unbounded session; it
+  needs either a per-session switch cap sized to the platform's memory ceiling, or
+  further investigation into the native-level render/audio/video teardown that
+  `renpy.bootstrap`'s own (loop-external) `finally` performs at process exit — see the
+  `im.cache.quit()` / `draw.quit()` / `audio.audio.quit()` calls this module's docstring
+  references — to find out whether an equivalent can be invoked mid-run once the
+  relevant subsystem objects actually exist for the pass that is about to end, not the
+  pass that is about to begin.

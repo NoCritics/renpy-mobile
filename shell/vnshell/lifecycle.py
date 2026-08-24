@@ -17,11 +17,24 @@ from vnshell.transports import FileTransport, NullTransport
 
 _installed = False
 
+# Absolute path of the basedir most recently handed back by select_next_basedir, so the
+# next call knows what to purge. Module-level rather than on STATE: it tracks what the
+# engine actually loaded, not what was requested, and select_next_basedir is the only
+# reader/writer.
+_previous_basedir: str | None = None
+
 
 def install(renpy_base: str) -> None:
-    """Wire the shell into Ren'Py. Must run before bootstrap()."""
+    """Wire the shell into Ren'Py. Must run before bootstrap().
+
+    Guarded against double-install: bootstrap() is expected to call this once, but
+    calling it twice would silently rebind get_alternate_base and reset STATE.
+    """
 
     global _installed
+
+    if _installed:
+        return
 
     # The shell project's game/ lives directly at renpy_base, mirroring iOS, where
     # Ren'Py's distributor packages the game into base/ alongside main.py and renpy/.
@@ -49,16 +62,34 @@ def select_next_basedir(basedir: str, always: bool = False) -> str:
     """Replacement for renpy.bootstrap.get_alternate_base.
 
     Returns the base directory Ren'Py should load on this pass of the restart loop.
-    Signature matches stock Ren'Py, which calls it with and without ``always``.
+    Signature matches stock Ren'Py, which calls it with and without ``always``; ``always``
+    is accepted only for signature compatibility with the stock function and is unused
+    here — bootstrap.py's restart loop always wants the freshest target, so there is no
+    "sometimes" case for us to distinguish.
+
+    This is also the one place guaranteed to run on every pass through the restart loop,
+    so it doubles as the between-game cleanup point: before returning a target that
+    differs from what was previously loaded, it hands the previous basedir to
+    vnshell.purge so caches and stray modules from the outgoing game do not survive into
+    the next one.
     """
+
+    global _previous_basedir
+
+    from vnshell import purge
 
     target = STATE.next_basedir or STATE.shell_project_dir
 
     if not os.path.isdir(target):
         # Never hand Ren'Py a path that does not exist; it exits the process.
         STATE.reset_for_shell()
-        return STATE.shell_project_dir
+        target = STATE.shell_project_dir
 
+    if _previous_basedir and _previous_basedir != target:
+        for action in purge.purge_engine_state(_previous_basedir):
+            print(f"[vnshell] purge: {action}")
+
+    _previous_basedir = target
     return target
 
 
@@ -70,6 +101,12 @@ def tick() -> None:
     if harness.enabled() and STATE.next_basedir is None:
         harness.start()
 
+    # NOTE: both current handlers restart the engine, i.e. raise UtterRestartException
+    # out of _dispatch. That aborts this loop, so any further commands already pulled
+    # from this poll() batch are silently dropped rather than deferred to next tick.
+    # Harmless today — a batch containing a restart command is expected to end the
+    # session anyway — but it will be a real bug once a non-restarting handler lands:
+    # queue remaining commands (or re-poll) instead of dropping them.
     for command in mailbox_module.MAILBOX.poll():
         _dispatch(command)
 
