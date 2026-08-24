@@ -23,7 +23,8 @@ sha256_of() {
 fetch() {
     # $4 (dirname) overrides the extracted directory name when the zip does
     # not unpack to "renpy-$RENPY_VERSION-$name" — renios does not.
-    local name="$1" expected="$2" marker="$3" dirname="${4:-renpy-$RENPY_VERSION-$name}"
+    local name="$1" expected="$2" marker="$3"
+    local dirname="${4:-renpy-$RENPY_VERSION-$name}"
     local zip="$VENDOR/renpy-$RENPY_VERSION-$name.zip"
     local dir="$VENDOR/$dirname"
 
