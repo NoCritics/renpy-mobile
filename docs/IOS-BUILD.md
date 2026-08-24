@@ -1117,3 +1117,114 @@ reports failure, and the fallback printed **"(none matched)" over a capture cont
 This is the same `grep`/`head`-under-`pipefail` trap raised in the Task 1 and Task 4
 reviews. Three occurrences in one milestone: treat any `| head` inside a `pipefail` script
 as a defect on sight.
+
+---
+
+# Task 6 — release automation
+
+Two changes to `.github/workflows/ios-build.yml`, plus the README pointers below. No
+new script; nothing under `scripts/ios/` changed.
+
+## The trigger gap, found and fixed
+
+The workflow already ran on `push: branches: [main, milestone-b]` and
+`workflow_dispatch`, but **not on tag pushes** — `startsWith(github.ref, 'refs/tags/')`
+in a release step can never be true if the workflow itself never runs for a tag push.
+Fixed by adding `tags: ['v*']` alongside the existing `branches:` list under `push:`.
+Both filters are independent per Actions' own ref-type matching (branch pushes match
+`branches`, tag pushes match `tags`); this is not new behavior in the workflow, just a
+missing trigger.
+
+## Attach the `.ipa` to a GitHub Release on tag pushes
+
+Added a step, gated `if: startsWith(github.ref, 'refs/tags/')`, using
+`softprops/action-gh-release@v2` to upload `build/VNPlayer.ipa` to the release matching
+the pushed tag. It authenticates with the automatic per-run `GITHUB_TOKEN` that Actions
+provisions for every workflow run — not a repository secret anyone configures, so this
+works identically on a fork with zero setup. The job's `permissions:` block was set to
+`contents: write` (scoped to this job only) because `softprops/action-gh-release`
+needs it to create/update a release and attach an asset; every other step in the job
+only reads the checkout and needs no elevated permission.
+
+**Not exercised in CI yet.** Per the task's own constraint, no tag has been pushed and
+no release published — that is the repository owner's decision, not this task's to
+make. The change was verified by parsing the workflow YAML (`yaml.safe_load` — parses
+clean) and by re-reading `softprops/action-gh-release@v2`'s documented interface, not
+by a live tag-triggered run. Mark this **unverified by a real run**, not confirmed.
+
+## Cache hit: observed, not assumed
+
+Task 1 wired `actions/cache@v4` around `vendor/*.zip` under key `renpy-8.5.3-archives`.
+Whether it actually hits was never checked before this task — it is now, from real run
+logs across the whole Task 1-5 history (`gh run view <id> --log`):
+
+- **First run ever with this key, 32740201093 (2026-08-24T14:40:56Z):** cache **miss**,
+  then saved on completion:
+  ```
+  Cache not found for input keys: renpy-8.5.3-archives
+  ...
+  Cache saved with key: renpy-8.5.3-archives
+  ```
+- **Every subsequent run checked — 32740372920, 32740785207, 32741864714,
+  32742226209 — hits the same key:**
+  ```
+  Cache hit for: renpy-8.5.3-archives
+  Cache restored successfully
+  Cache restored from key: renpy-8.5.3-archives
+  ...
+  Cache hit occurred on the primary key renpy-8.5.3-archives, not saving cache.
+  ```
+  (`Post Cache Ren'Py downloads` correctly skips re-saving on a hit, since the archive
+  content is unchanged.) Confirmed across every one of the ~25 non-discovery-workflow
+  runs on `milestone-b` through Task 5 that share this key — no run since the first has
+  reported a miss.
+
+**Timed from the same logs, "Fetch dependencies" step only** (download+verify+unpack vs.
+cache-restore+verify+unpack — both zips, no network download in the cached case):
+
+| Run | Cache | Step start → end | Duration |
+|---|---|---|---|
+| 32740201093 | miss (downloaded from renpy.org) | 14:40:59.345Z → 14:41:11.878Z | **~12.5s** |
+| 32740372920 | hit (restored from cache) | 14:42:52.234Z → 14:42:59.680Z | **~7.4s** |
+
+The gap is real but modest (~5s) because GitHub-hosted runners have very high bandwidth
+to renpy.org — the two pinned zips (SDK + renios, ~290 MB combined per the cache's own
+"Sent 288435135" byte count) download in a few seconds regardless. The cache mainly
+saves a fetch to an external host on every run rather than saving large wall-clock time;
+its main value is resilience against renpy.org being briefly unreachable, not speed.
+
+Whole-job duration for the same two runs, from `gh api .../jobs`:
+`started_at`/`completed_at` — 32740201093 (miss): 14:40:56Z → 14:41:24Z (28s, this run
+predates the Xcode/archive/overlay steps added in later tasks, so it is not comparable
+to a full modern run's total time, only to isolate the fetch-step delta above).
+
+## `README.md`
+
+Added: current status (Milestones A and B complete, pipeline proven on hardware), a
+link to `https://github.com/NoCritics/renpy-mobile/releases/latest`, and a pointer to
+`docs/INSTALL.md`. The existing non-affiliation line was left as the only one — not
+duplicated.
+
+## Files changed (Task 6)
+
+- `.github/workflows/ios-build.yml` — added `tags: ['v*']` to the `push` trigger, a
+  job-level `permissions: contents: write`, and the tag-gated "Attach to release" step.
+- `README.md` — status, release link, `docs/INSTALL.md` pointer.
+- `docs/INSTALL.md` (new) — the Sideloadly walkthrough for a non-developer reader.
+- `docs/IOS-BUILD.md` — this section.
+
+## Not determined (Task 6)
+
+- Whether `softprops/action-gh-release@v2` actually succeeds against a real tag push —
+  no tag has been pushed. The repository owner publishing a release is what will
+  exercise this for the first time.
+- Whether the default `GITHUB_TOKEN` permissions on a fork (which may differ from this
+  repository's settings) are sufficient without the explicit `permissions:` block this
+  task added — the block was added specifically so this does not depend on a fork
+  owner's default settings, but that reasoning has not been tested against an actual
+  fork.
+- Cache behavior across a GitHub Actions cache eviction (caches over ~10 GB total per
+  repo, or unused for 7 days, are evicted) — the archives are ~290 MB combined and the
+  milestone's CI activity has been dense enough that eviction was never observed, but
+  a long-idle repository would see the first post-idle run miss and re-save, which is
+  correct behavior, not a defect.

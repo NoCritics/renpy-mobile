@@ -4,11 +4,17 @@ on:
   workflow_dispatch:
   push:
     branches: [main, milestone-b]
+    tags: ['v*']
 
 jobs:
   discover:
     runs-on: macos-15
     timeout-minutes: 90
+    # write is needed only for the tag-triggered "Attach to release" step, which uses
+    # the automatic per-run GITHUB_TOKEN -- not a configured secret, so this is safe on
+    # any fork. Every other step only reads the checkout.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -225,3 +231,18 @@ jobs:
           name: VNPlayer-ipa
           path: build/VNPlayer.ipa
           if-no-files-found: error
+
+      # Only fires on a tag push (e.g. v0.1.0), never on a branch push or
+      # workflow_dispatch. Uses the automatic, per-run GITHUB_TOKEN that Actions
+      # provisions for every workflow -- not a repository secret anyone has to
+      # configure, so this step works identically on any fork. No certificate,
+      # provisioning profile, or App Store Connect key is involved: the .ipa
+      # attached here is the same unsigned artifact Sideloadly signs locally.
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/VNPlayer.ipa
+          body: |
+            Unsigned build. Install with Sideloadly using your own free Apple ID --
+            see docs/INSTALL.md. No Apple Developer Program membership required.
