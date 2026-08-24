@@ -123,32 +123,49 @@ a row would have been wrong without one.
 Branch `spike/swift-bridge`, pushed. Last build: run 32789146023 (commit `b2f0a98`). `main` is untouched at
 the Milestone B merge; nothing here has been merged.
 
-## Round 2 is built and pushed — what it discriminates
+## Round 2 RESULT: the overlay installs and renders nothing
 
-Commit `b2f0a98` did both of the steps this section used to describe. The button is now
-dead centre, large, fully opaque, on a colour the shell project never uses, ignoring safe
-areas. The install result is now one argument-free literal per outcome, plus a new `-3`
-for a window that installs with an empty frame.
+Device run, 2026-08-25 01:39, commit `b2f0a98`:
 
-**The predictions, stated before the device run so they cannot be rationalised after it.**
-Read the log for the `[vnspike] overlay ...` line and the screen for the red panel:
+```
+Aug 25 01:39:06.184947 VNPlayer[1508] <Notice>: [vnspike] bootstrap registered
+Aug 25 01:39:06.908692 VNPlayer[1508] <Notice>: [vnspike] overlay installed
+```
 
-| Log line | Red panel | What it means | Next move |
-|---|---|---|---|
-| `overlay installed` | **visible** | SwiftUI and SDL coexist. The spike's central question is answered YES. | Tap it; confirm `from Swift: N received` climbs. That closes the loop end to end. |
-| `overlay installed` | **not visible** | The window installs with a real frame but never reaches the screen. Coexistence is the problem, not placement. | Raise `windowLevel` to `.alert + 1`; if that fails, host the SwiftUI view inside SDL's own view controller instead of a second window. |
-| `overlay FAILED zero-size window` | not visible | Installed against a scene with no bounds — a timing problem, not a layering one. | Install on the scene's first layout pass rather than on activation. |
-| `overlay FAILED no window scene` | not visible | `didBecomeActive` fires before SDL's scene exists. | Retry on the next runloop turn, or observe scene connection instead. |
-| `overlay FAILED not main thread` | not visible | The notification block is not on the main queue, contradicting `[NSOperationQueue mainQueue]`. | Would be genuinely surprising; investigate before assuming anything else. |
-| no `[vnspike] overlay` line at all | — | The notification never fired, or `+load` did not register. | Check `bootstrap registered` still decodes; if it does, the observer is the suspect. |
+`overlay installed` is return code 1: main thread, a `UIWindowScene` found, a window
+created with a non-empty frame, attached at `.normal + 1`, `isHidden = false`. No red
+panel on screen. Placement was not the problem, so the clipping hypothesis is dead --
+though the Ren'Py text really is clipped at the top, which is a separate defect and still
+unexplained.
 
-The point of the table is that **every outcome now names its own next move.** The previous
-round had two outcomes that looked identical from outside the device, which is why it
-produced no information.
+**Cause, identified in the source rather than on the device:** `PassthroughHostingController`
+overrode `loadView()` and assigned a plain `UIView`. `UIHostingController`'s view is not an
+ordinary `UIView` -- it is the hosting view that renders the SwiftUI tree, and `loadView`
+is where it gets created. Overriding it away leaves a correctly-installed,
+correctly-positioned, entirely empty window. Every symptom follows: rc=1, non-empty frame,
+nothing drawn.
 
-`windowLevel` was deliberately left at `.normal + 1` this round. Changing placement and
-layering together would make a visible button unattributable — and if it stays invisible,
-the table above already says layering is the next lever to pull.
+That is the same failure shape as the `*.m` glob in `build_spike.sh`: a construct that
+reads as though it should work, produces no error, and silently does nothing.
+
+**Fix (commit below):** passthrough moved to a `PassthroughWindow: UIWindow` subclass
+overriding `hitTest`, which is where it belonged. `UIHostingController` is now used
+unmodified, added as a child view controller.
+
+### Round 3 carries a control, and the screen alone reads it
+
+The window now also hosts a **pure-UIKit green box labelled UIKIT**, added as a plain
+`UIView` with no SwiftUI involved, left of centre so it cannot hide behind the red panel.
+Without it, "nothing on screen" again cannot separate two very different failures.
+
+| On screen | Meaning | Next move |
+|---|---|---|
+| green **and** red | Window composites over SDL and SwiftUI hosts inside it. The spike's central question is answered YES. | Tap the button; confirm `from Swift: N received` climbs. |
+| green **only** | The window composites fine; SwiftUI hosting is the remaining problem. | Investigate the hosting controller; UIKit is a viable fallback for the whole overlay. |
+| **neither** | The window is not reaching the screen at all. Layering, not content. | Raise `windowLevel` to `.alert + 1`; then `makeKeyAndVisible`; then host inside SDL's own view controller. |
+
+Note the third row is now reachable as a *conclusion* rather than a guess, which it was
+not in round 2.
 
 ## iOS 13.0 is the API floor
 

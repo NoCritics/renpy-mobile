@@ -17,21 +17,93 @@
 import UIKit
 import SwiftUI
 
+// MARK: - Passthrough
+
 // Touches outside an actual control must reach the game underneath. A plain UIWindow
 // swallows everything; without this the engine receives no input at all.
-final class PassthroughView: UIView {
+//
+// This lives on the WINDOW, not on a replacement for the hosting controller's view.
+// The previous version subclassed UIHostingController and overrode loadView to install a
+// plain UIView -- which silently defeated the whole point of UIHostingController. Its
+// view is not an ordinary UIView: it is the hosting view that renders the SwiftUI tree.
+// Substituting a plain one leaves a correctly-installed, correctly-sized, entirely EMPTY
+// window. That is exactly what the device showed: "[vnspike] overlay installed" in the
+// log, and nothing on screen.
+final class PassthroughWindow: UIWindow {
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        let hit = super.hitTest(point, with: event)
-        return hit === self ? nil : hit
+        guard let hit = super.hitTest(point, with: event) else { return nil }
+        // A hit that lands on the root view itself is empty space, not a control.
+        return hit === rootViewController?.view ? nil : hit
     }
 }
 
-final class PassthroughHostingController<Content: View>: UIHostingController<Content> {
-    override func loadView() {
-        view = PassthroughView()
+// MARK: - Root
+
+// Hosts two things deliberately: the SwiftUI view UNDER TEST, and a pure-UIKit CONTROL
+// that involves no SwiftUI at all.
+//
+// The standing rule from this project's other probes: every probe carries a control that
+// must succeed. Without one, "nothing is on screen" cannot distinguish "this window does
+// not composite over SDL" from "this window composites fine and the SwiftUI inside it
+// rendered nothing" -- and those two have completely different next moves. The green box
+// is UIKit-only, so it answers the first question independently of the second.
+//
+// Reading the result needs no log at all, just the screen:
+//   green AND red  -> window composites, SwiftUI hosts. Question answered YES.
+//   green ONLY     -> window composites; SwiftUI hosting is the problem.
+//   NEITHER        -> the window is not reaching the screen; layering is the problem.
+final class SpikeRootViewController: UIViewController {
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
         view.backgroundColor = .clear
+
+        // --- the thing under test: SwiftUI, hosted the ordinary way ---
+        let host = UIHostingController(rootView: SpikeOverlayView())
+        host.view.backgroundColor = .clear
+        host.view.isOpaque = false
+        addChild(host)
+        host.view.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(host.view)
+        NSLayoutConstraint.activate([
+            host.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            host.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            host.view.topAnchor.constraint(equalTo: view.topAnchor),
+            host.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+        host.didMove(toParent: self)
+
+        // --- the control: no SwiftUI anywhere in this ---
+        // Added last so it is on top: if the hosting view ever paints opaque, the control
+        // must still be visible, or it is not a control.
+        let control = UIView()
+        control.backgroundColor = .green
+        control.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(control)
+
+        let label = UILabel()
+        label.text = "UIKIT"
+        label.textColor = .black
+        label.font = .boldSystemFont(ofSize: 20)
+        label.textAlignment = .center
+        label.translatesAutoresizingMaskIntoConstraints = false
+        control.addSubview(label)
+
+        NSLayoutConstraint.activate([
+            // Left of centre, so it cannot be confused with the SwiftUI panel and cannot
+            // be hidden behind it.
+            control.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            control.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 40),
+            control.widthAnchor.constraint(equalToConstant: 140),
+            control.heightAnchor.constraint(equalToConstant: 140),
+
+            label.centerXAnchor.constraint(equalTo: control.centerXAnchor),
+            label.centerYAnchor.constraint(equalTo: control.centerYAnchor),
+        ])
     }
 }
+
+// MARK: - The SwiftUI view under test
 
 struct SpikeOverlayView: View {
     @State private var posted = 0
@@ -39,12 +111,10 @@ struct SpikeOverlayView: View {
     var body: some View {
         // Dead centre, opaque, loud, and deliberately ignoring safe areas.
         //
-        // The previous version pinned this to the top-right behind a 24pt inset and the
-        // owner could not see it at all. That is NOT by itself evidence the overlay
-        // failed to install: the Ren'Py diagnostic text is also clipped at the top and
-        // edges on this device, so whatever crops the engine's output would crop a
-        // corner-anchored button too. Centre is the one position that survives an
-        // unexpected inset, a rotation, and a scale mismatch at the same time.
+        // The first version pinned this to the top-right behind a 24pt inset, and the
+        // Ren'Py diagnostic text is clipped at the top and edges on this device, so
+        // "cropped off screen" was a live hypothesis. Centre removes it: this position
+        // survives an unexpected inset, a rotation and a scale mismatch at once.
         ZStack {
             VStack(spacing: 16) {
                 Text("SWIFT OVERLAY")
@@ -87,14 +157,14 @@ struct SpikeOverlayView: View {
     }
 }
 
+// MARK: - Installation
 
 // Held strongly: a UIWindow with no strong reference is released and silently vanishes.
 private var spikeOverlayWindow: UIWindow?
 
 @_cdecl("vnspike_install_overlay")
 public func vnspike_install_overlay() -> Int32 {
-    // Must run on the main thread — UIKit requires it, and Python calls this from
-    // Ren'Py's own loop, which is the main thread.
+    // Must run on the main thread — UIKit requires it.
     guard Thread.isMainThread else { return -1 }
 
     if spikeOverlayWindow != nil { return 2 }  // already installed
@@ -108,14 +178,11 @@ public func vnspike_install_overlay() -> Int32 {
 
     guard let windowScene = scene else { return -2 }
 
-    let window = UIWindow(windowScene: windowScene)
+    let window = PassthroughWindow(windowScene: windowScene)
     window.windowLevel = .normal + 1
     window.backgroundColor = .clear
     window.isOpaque = false
-
-    let host = PassthroughHostingController(rootView: SpikeOverlayView())
-    host.view.backgroundColor = .clear
-    window.rootViewController = host
+    window.rootViewController = SpikeRootViewController()
 
     // A window that installs successfully but has no area is indistinguishable, from
     // the outside, from one that never installed: both show nothing. Give that case
@@ -123,14 +190,15 @@ public func vnspike_install_overlay() -> Int32 {
     if window.frame.isEmpty { return -3 }
 
     // Deliberately NOT makeKeyAndVisible: taking key status away from SDL's window is a
-    // plausible way to break its input handling.
+    // plausible way to break its input handling. If the control box turns out not to
+    // render either, this is the first thing to revisit.
     window.isHidden = false
 
     spikeOverlayWindow = window
     return 1
 }
 
-
+// MARK: - Swift -> Python
 
 // Writes one newline-delimited JSON command into the app's Documents directory, where
 // Python's FileTransport is polling. Returns false rather than throwing, because a
