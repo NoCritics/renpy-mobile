@@ -103,6 +103,17 @@ def _rss_bytes() -> int:
 
         return int(counters.WorkingSetSize)
 
+    # NOTE: ru_maxrss is PEAK resident set size — the high-water mark since process
+    # start — not current RSS. It can never decrease, so this fallback cannot detect
+    # teardown actually freeing memory: a run where every switch perfectly released what
+    # it allocated would still read a monotonically non-decreasing curve here, identical
+    # in shape to a real leak. This is fine for the desktop/Linux harness path, which
+    # only needs to prove growth exists, but it would be a fourth instrument failure
+    # (after the two style-bleed canaries and the truncated-handle RSS bug — see
+    # docs/BUILD.md) if inherited as-is on iOS, where the whole point is measuring
+    # whether teardown reduces memory. The iOS harness must use
+    # task_info(TASK_VM_INFO).phys_footprint instead — current, not peak, and the same
+    # figure Jetsam itself uses to decide whether to kill the process.
     try:
         import resource
 

@@ -1,7 +1,7 @@
 """Between-game engine cleanup.
 
 Ren'Py's bootstrap tears down the renderer, audio and image cache in a ``finally`` that
-sits *outside* its restart loop (bootstrap.py: try at 354, while at 355, finally at 409).
+sits *outside* its restart loop (bootstrap.py: try at 372, while at 373, finally at 427).
 Nothing is therefore released between games, and this module has to do it by hand.
 
 Every step is defensive: a failure here must degrade the switch, not crash the app.
@@ -12,16 +12,22 @@ the iOS plan:
 
 - ``teardown_live_engine()`` runs from ``lifecycle._restart()``, *before*
   ``UtterRestartException`` is raised. This is the only moment the outgoing game's
-  renderer, audio subsystem and caches are still live and reachable — it makes the same
-  calls bootstrap.py's own ``finally`` block makes at process exit (bootstrap.py:
-  409-419), just per switch instead of once at the end of the process.
+  renderer, audio subsystem and caches are still live and reachable. Three of its six
+  calls are the same ones bootstrap.py's own ``finally`` block makes at process exit
+  (bootstrap.py: 427-438) — ``im.cache.quit()``, ``draw.quit()`` and ``audio.audio.quit()``
+  — made per switch instead of once at the end of the process; the other three
+  (stopping music/sound/voice, ``movie_stop()``, ``font.free_memory()``) are ours, with
+  no engine-authored counterpart. See the docstring on ``teardown_live_engine`` for the
+  full breakdown.
 - ``purge_engine_state()`` runs from ``select_next_basedir()``, which bootstrap calls
   *after* ``renpy.reload_all()``. By then the engine's module objects have already been
   replaced, so anything reachable only through fresh module state (image cache, render
   cache, font cache, audio/video subsystems) is a *new*, empty object at this point —
-  cleaning it up here has nothing to act on. Only ``sys.modules``/``sys.path``, which
-  persist across ``reload_all()`` regardless, are actually reachable and useful from
-  this hook.
+  cleaning it up here has nothing to act on. Only ``sys.modules`` is actually reachable
+  and useful from this hook; ``sys.path`` is also filtered here for belt-and-braces
+  reasons, but bootstrap.py resets ``sys.path`` unconditionally on every pass
+  (bootstrap.py:387) before the next game's code runs, so that filter has no observable
+  effect — see ``_purge_modules`` for the detail.
 
 Concretely: five candidates (``im.cache.clear()``, ``render.free_memory()``,
 ``font.free_memory()``, ``gc.collect()``, audio/video stop) were tried from the
@@ -58,19 +64,30 @@ def teardown_live_engine() -> list[str]:
     Why these six steps are kept despite measuring no effect on RSS (docs/BUILD.md,
     "Purge findings", second full harness run): they are **safe** — measured across 100
     consecutive mid-session switches, including ``draw.quit()``, the step judged most
-    likely to crash the next restart pass, with zero failures — and they **mirror the
-    engine's own shutdown sequence** (the same calls bootstrap.py's ``finally`` makes at
-    process exit, bootstrap.py:409-419), just made per switch instead of once. What was
-    actually measured is narrower than "these steps do nothing": it is that they do not
-    reduce **resident set size on Windows with an NVIDIA GL driver**. RSS does not
-    capture driver-side allocations, and this measurement does not transfer to iOS,
-    which runs a completely different graphics stack (MetalANGLE over Metal, not
+    likely to crash the next restart pass, with zero failures.
+
+    "Mirrors the engine's own shutdown sequence" is only half true, and the two halves
+    matter differently. Only **three** of these six calls actually appear in
+    bootstrap.py's own ``finally`` (bootstrap.py:427-438, at process exit):
+    ``im.cache.quit()`` (``_quit_image_cache``), ``draw.quit()`` (``_quit_draw``, both
+    guarded there behind ``if renpy.display.draw:``) and ``audio.audio.quit()``
+    (``_quit_audio``). The other **three** — stopping music/sound/voice (``_stop_audio``),
+    ``movie_stop()`` (``_stop_video``) and ``font.free_memory()`` (``_free_fonts``) — do
+    not appear in bootstrap.py's ``finally`` at all; they are ours, added because the
+    engine-authored three did not cover everything a live game leaves behind mid-session
+    (bootstrap.py's ``finally`` only ever runs once, at process exit, with no next game
+    about to load). All six are kept on the same safety argument regardless of origin:
+    what was actually measured is narrower than "these steps do nothing" — it is that
+    none of the six reduce **resident set size on Windows with an NVIDIA GL driver**. RSS
+    does not capture driver-side allocations, and this measurement does not transfer to
+    iOS, which runs a completely different graphics stack (MetalANGLE over Metal, not
     Windows OpenGL). Removing them on the strength of a Windows-only null result would
-    be discarding safe, engine-authored cleanup on an assumption, not a cross-platform
-    measurement. **The iOS port must re-measure these six steps on device** rather than
-    inherit this Windows finding in either direction — the null result here is not
-    evidence they are safe to skip there, any more than it would be evidence to keep
-    them if the *positive* result had shown up on Windows.
+    be discarding safe cleanup — engine-mirroring for three, shell-original for the other
+    three — on an assumption, not a cross-platform measurement. **The iOS port must
+    re-measure these six steps on device** rather than inherit this Windows finding in
+    either direction — the null result here is not evidence they are safe to skip there,
+    any more than it would be evidence to keep them if the *positive* result had shown up
+    on Windows.
     """
 
     actions: list[str] = []
@@ -113,9 +130,19 @@ def _free_fonts() -> None:
 
 
 def _quit_image_cache() -> None:
+    """Quit the image cache, guarded the same way bootstrap.py's own ``finally`` guards it.
+
+    bootstrap.py:434-436 calls ``im.cache.quit()`` and ``draw.quit()`` both behind a
+    single ``if renpy.display.draw:``. Matching that guard here, rather than calling
+    unconditionally, keeps this call consistent with the sequence it is cited as
+    mirroring — see the module and ``teardown_live_engine`` docstrings.
+    """
+
+    import renpy.display  # type: ignore
     import renpy.display.im  # type: ignore
 
-    renpy.display.im.cache.quit()
+    if renpy.display.draw:
+        renpy.display.im.cache.quit()
 
 
 def _quit_draw() -> None:
@@ -205,12 +232,24 @@ def _purge_modules(previous_basedir: str | None) -> str:
     # Mirror the module filter's directory-boundary guard exactly. A bare
     # startswith(root) would also strip a sibling like <basedir>/game_assets or
     # <basedir>/gamelib — neither is under game/, but both prefix-match the string
-    # "…/game". Invisible with the sentinel games (neither ships such a sibling), but
-    # real games do, so this was a latent bug, not a theoretical one.
+    # "…/game". Invisible with the sentinel games (neither ships such a sibling). Note
+    # this guard is now known to be belt-and-braces on a line that has no observable
+    # effect at all (see the comment below) — bootstrap.py:387 resets sys.path
+    # unconditionally on every pass, before any import happens, so a missing guard here
+    # could never have manifested as an observed import from the wrong directory. Kept
+    # correct anyway, on the same reasoning as keeping the filter itself.
     def _under_root(path: str) -> bool:
         resolved = os.path.abspath(path)
         return resolved == root or resolved.startswith(root + os.sep)
 
+    # Belt-and-braces, not the mechanism: bootstrap.py:387 does
+    # `sys.path = list(original_sys_path)` unconditionally, eight lines after it calls
+    # get_alternate_base() (bootstrap.py:379, which is how this function gets invoked),
+    # in the same `try`, before any import happens. Whatever this filter removes is
+    # therefore discarded and rebuilt from the pre-loop snapshot before the next game's
+    # code ever runs — this line has no observable effect on the running interpreter.
+    # Kept anyway because it is cheap and correct, in case a future engine version drops
+    # that reset.
     sys.path[:] = [p for p in sys.path if not _under_root(p)]
 
     return f"purged {len(removed)} modules: {', '.join(sorted(removed))}" if removed else ""

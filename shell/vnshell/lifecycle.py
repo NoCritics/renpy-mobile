@@ -23,6 +23,13 @@ _installed = False
 # reader/writer.
 _previous_basedir: str | None = None
 
+# Whether the scripted cycling harness is active, read once in install() and cached
+# here. tick() runs every frame in code that ships to iOS; an os.environ lookup
+# (vnshell.harness.enabled()) every frame is production cost paid for test scaffolding.
+# Reading it once at startup and checking a bool the rest of the session's frames costs
+# nothing.
+_harness_enabled = False
+
 
 def install(renpy_base: str) -> None:
     """Wire the shell into Ren'Py. Must run before bootstrap().
@@ -31,14 +38,14 @@ def install(renpy_base: str) -> None:
     calling it twice would silently rebind get_alternate_base and reset STATE.
     """
 
-    global _installed
+    global _installed, _harness_enabled
 
     if _installed:
         return
 
     # The shell project's game/ lives directly at renpy_base, mirroring iOS, where
     # Ren'Py's distributor packages the game into base/ alongside main.py and renpy/.
-    # This also keeps bootstrap.py:315 happy: it calls path_to_gamedir(renpy_base, ...)
+    # This also keeps bootstrap.py:334 happy: it calls path_to_gamedir(renpy_base, ...)
     # before the restart loop is ever entered, and our strict version needs game/ there.
     STATE.shell_project_dir = renpy_base
     STATE.saves_root = os.environ.get(
@@ -50,6 +57,10 @@ def install(renpy_base: str) -> None:
         mailbox_module.MAILBOX = Mailbox(FileTransport(command_file))
     else:
         mailbox_module.MAILBOX = Mailbox(NullTransport())
+
+    from vnshell import harness
+
+    _harness_enabled = harness.enabled()
 
     import renpy.bootstrap  # type: ignore
 
@@ -96,9 +107,9 @@ def select_next_basedir(basedir: str, always: bool = False) -> str:
 def tick() -> None:
     """Drain the mailbox. Called every frame from config.periodic_callbacks."""
 
-    from vnshell import harness
+    if _harness_enabled and STATE.next_basedir is None:
+        from vnshell import harness
 
-    if harness.enabled() and STATE.next_basedir is None:
         harness.start()
 
     # NOTE: both current handlers restart the engine, i.e. raise UtterRestartException

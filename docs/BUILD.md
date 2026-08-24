@@ -207,12 +207,16 @@ itself the most useful thing this task hands to the iOS plan:
    `renpy.reload_all()`, so any engine module reachable only through fresh module state
    (image cache, render cache, font cache, audio/video subsystems) is already a new,
    empty object here — cleanup at this point has nothing live to act on except
-   `sys.modules`/`sys.path`, which persist across `reload_all()` regardless.
+   `sys.modules`, which persists across `reload_all()` regardless. (This hook also
+   filters `sys.path`, but that filter is belt-and-braces, not load-bearing — see
+   "Necessary" below.)
 2. **Pre-restart hook**, `teardown_live_engine()`, called from `lifecycle._restart()`,
    *before* `UtterRestartException` is raised. This is the last moment the outgoing
-   game's renderer, audio subsystem and caches are still live, reachable objects — the
-   same objects bootstrap.py's own `finally` (bootstrap.py:409-419) tears down once, at
-   process exit, outside the restart loop.
+   game's renderer, audio subsystem and caches are still live, reachable objects. Three
+   of this hook's six calls are the same objects bootstrap.py's own `finally`
+   (bootstrap.py:427-438) tears down once, at process exit, outside the restart loop; the
+   other three have no counterpart there — see "Necessary at the pre-restart hook" below
+   for the breakdown.
 
 The first pass at this task tried five memory candidates against the post-reload hook
 and found none of them helped. Task 8's coordinator caught that this was very likely
@@ -223,7 +227,7 @@ instead. Both experiments and both results are recorded below in full: the fix t
 rather than assuming it from the theory, is exactly the discipline this section exists
 to enforce.
 
-### Necessary: purging `sys.modules` and `sys.path` under the previous game's `game/` dir
+### Necessary: purging `sys.modules` under the previous game's `game/` dir
 
 This is the only step that measurably fixed a reported failure. Before it existed, the
 harness baseline (`## Harness baseline` above) showed game B reading game A's cached
@@ -277,22 +281,38 @@ FAIL: memory grew from 185.3 MB to 261.2 MB over 5 cycles — leak
 
 `sys.modules` contamination: gone. Only the pre-existing memory-growth failure remained.
 
-**A second real bug, same shape, found in Task 8 code review after the above was
-written.** The `sys.modules` filter correctly uses a directory-boundary guard
-(`resolved.startswith(root + os.sep)` — a trailing separator, so `.../game_assets`
-cannot match a `root` of `.../game`), but the `sys.path` filter a few lines below it
-used a bare `os.path.abspath(p).startswith(root)`, with no such guard. With
-`root = <previous_basedir>/game`, a sibling directory like `<previous_basedir>/gamelib`
-or `<previous_basedir>/game_assets` prefix-matches the string `"…/game"` and would have
-been wrongly stripped from `sys.path` on every switch, even though it is not under
-`game/` at all. Invisible to the harness because neither sentinel game ships such a
-sibling — a latent bug, not a theoretical one, since real games commonly do. Fixed by
-giving the `sys.path` filter the identical `_under_root` boundary check the module
-filter already had (`resolved == root or resolved.startswith(root + os.sep)`). No
-harness-observable behavior changed for the sentinel games (confirmed by rerunning
-`bash scripts/run_harness.sh 4`: same "purged 1 modules: sentinel" outcome, same
-memory-only failure) — this fix protects a case this harness cannot exercise, which is
-exactly why review caught it and the harness did not.
+**A second bug, same shape, found in Task 8 code review after the above was written —
+and a correction to how it was originally described, found during the later
+whole-branch review that produced this fix wave.** The `sys.modules` filter correctly
+uses a directory-boundary guard (`resolved.startswith(root + os.sep)` — a trailing
+separator, so `.../game_assets` cannot match a `root` of `.../game`), but the `sys.path`
+filter a few lines below it used a bare `os.path.abspath(p).startswith(root)`, with no
+such guard. With `root = <previous_basedir>/game`, a sibling directory like
+`<previous_basedir>/gamelib` or `<previous_basedir>/game_assets` prefix-matches the
+string `"…/game"` and would have been stripped from `sys.path` on every switch, even
+though it is not under `game/` at all. Invisible to the harness because neither sentinel
+game ships such a sibling. Fixed by giving the `sys.path` filter the identical
+`_under_root` boundary check the module filter already had (`resolved == root or
+resolved.startswith(root + os.sep)`). No harness-observable behavior changed for the
+sentinel games (confirmed by rerunning `bash scripts/run_harness.sh 4`: same "purged 1
+modules: sentinel" outcome, same memory-only failure).
+
+**This was originally recorded as "a latent bug, not a theoretical one, since real games
+commonly do [ship such a sibling]." That description is wrong, and the correction
+matters.** Verified against the pinned SDK during the whole-branch review: `bootstrap.py`
+calls `get_alternate_base` (this project's `select_next_basedir`, where the `sys.path`
+filter runs) at line 379, then at line 387 — eight lines later, in the same `try`, before
+any import happens — does `sys.path = list(original_sys_path)` unconditionally. That
+line discards and rebuilds `sys.path` from the pre-restart-loop snapshot on *every* pass,
+regardless of what `select_next_basedir` did to it. So whatever the missing boundary
+guard would have stripped from `sys.path` was always going to be overwritten a few lines
+later anyway — the guard's absence could never have manifested as an observed import
+from the wrong directory, on any game, real or synthetic. It was a bug in code with no
+observable effect, not "a latent bug, not a theoretical one." The fix was still correct
+to make (matching the module filter's guard is the right thing to do, and a future engine
+version could drop that reset), but the original justification for calling it dangerous
+was itself wrong. See `shell/vnshell/purge.py`'s module docstring and the comment at the
+`sys.path` filter for where this is now recorded in the code.
 
 ### Tried and found unnecessary (post-reload hook): five candidates for the memory-growth failure
 
@@ -470,14 +490,22 @@ orphaned and unreachable from Python. The only point those objects are still liv
 reachable is *before* `UtterRestartException` is raised, inside `lifecycle._restart()`.
 
 `shell/vnshell/purge.py` gained `teardown_live_engine()`, called from `_restart()`
-before the raise, making six calls against the still-live engine — the same ones
-bootstrap.py's own `finally` makes at process exit (bootstrap.py:409-419), plus
-`renpy.text.font.free_memory()`: stop audio (`renpy.audio.music.stop` on all three
-channels), stop video (`renpy.display.video.movie_stop`), free fonts
-(`renpy.text.font.free_memory`), quit the image cache (`renpy.display.im.cache.quit`),
-quit the renderer (`renpy.display.draw.quit`), and quit the audio subsystem
-(`renpy.audio.audio.quit`). `purge_engine_state` (the post-reload hook, `_purge_modules`
-only) was left unchanged, as instructed — the `sys.modules` fix must not regress.
+before the raise, making six calls against the still-live engine: stop audio
+(`renpy.audio.music.stop` on all three channels), stop video
+(`renpy.display.video.movie_stop`), free fonts (`renpy.text.font.free_memory`), quit the
+image cache (`renpy.display.im.cache.quit`), quit the renderer
+(`renpy.display.draw.quit`), and quit the audio subsystem (`renpy.audio.audio.quit`).
+Only **three** of these six are the same calls bootstrap.py's own `finally` makes at
+process exit (bootstrap.py:427-438) — quit the image cache, quit the renderer, and quit
+the audio subsystem. The other three — stop audio, stop video, free fonts — have no
+counterpart in bootstrap.py's `finally` at all; they were added here because the
+engine's own teardown, which runs once at process exit with nothing expected to run
+after it, does not cover everything a live game leaves behind mid-session. (An earlier
+version of this section described all six as mirroring bootstrap.py's sequence; that
+was corrected during the whole-branch review that produced the final fix wave — see
+`shell/vnshell/purge.py`'s docstrings for where this is now recorded in the code.)
+`purge_engine_state` (the post-reload hook, `_purge_modules` only) was left unchanged,
+as instructed — the `sys.modules` fix must not regress.
 
 **The most uncertain call, `renpy.display.draw.quit()`, was flagged as possibly fatal**
 — quitting the renderer mid-session and expecting `main()`/bootstrap to reinitialize it
@@ -568,8 +596,10 @@ this section: what was actually measured is narrower than "these steps do nothin
 is that they do not reduce **resident set size on Windows with an NVIDIA GL driver**.
 RSS does not see driver-side allocations, and iOS runs a categorically different
 graphics stack (MetalANGLE over Metal, not Windows OpenGL) — this measurement does not
-transfer. The six steps are also Ren'Py's own documented process-exit sequence
-(bootstrap.py:409-419) and have now been measured safe across 100 consecutive
+transfer. Three of the six steps (quit image cache, quit renderer, quit audio subsystem)
+are also Ren'Py's own documented process-exit sequence (bootstrap.py:427-438); the other
+three (stop audio, stop video, free fonts) are not — see "Necessary at the pre-restart
+hook" above for the breakdown. All six have now been measured safe across 100 consecutive
 mid-session calls, `draw.quit()` included. **The iOS port must re-measure these six
 steps on-device rather than inherit this Windows result in either direction** — a null
 result on Windows is not evidence they are safe to drop on iOS, and it would not have
@@ -578,8 +608,12 @@ also lives in `teardown_live_engine()`'s docstring in `shell/vnshell/purge.py`.
 
 ### Bottom line for Task 8
 
-- **`sys.modules`/`sys.path` contamination: fixed**, confirmed over 200 launches across
-  two separate 100-cycle runs (100 A→B/B→A switches each), zero failures in either.
+- **`sys.modules` contamination: fixed**, confirmed over 200 launches across two separate
+  100-cycle runs (100 A→B/B→A switches each), zero failures in either. (The
+  `sys.modules` purge also filters `sys.path` at the same hook, but that filter is
+  belt-and-braces, not load-bearing: bootstrap.py resets `sys.path` unconditionally on
+  every pass, immediately after this hook runs and before any import happens — see
+  "Necessary: purging `sys.modules`..." above.)
 - **Store-variable leakage and save-directory isolation: still clean**, as at the Task 7
   baseline — unaffected by this task, reconfirmed over both 100-cycle runs.
 - **Memory growth: not fixed, at either hook point, and this was checked, not assumed.**
@@ -611,3 +645,20 @@ also lives in `teardown_live_engine()`'s docstring in `shell/vnshell/purge.py`.
   would require instrumenting or modifying Ren'Py's own C/SDL-level teardown
   (`renpy/`, out of scope for this shell-layer task) rather than anything callable from
   `vnshell.purge` at either hook point available to it.
+- **The memory instrument itself must not be ported to iOS as measured here.** The
+  numbers throughout this section come from `_rss_bytes()`'s Windows path
+  (`GetProcessMemoryInfo`'s `WorkingSetSize`), which is current RSS and is fine for that
+  purpose. But `_rss_bytes()`'s POSIX fallback — the code path any non-Windows re-run,
+  including a naive port, would exercise — reads
+  `resource.getrusage(...).ru_maxrss`, which is *peak* RSS since process start, not
+  current RSS. Peak can only increase, so it cannot tell "teardown released memory" apart
+  from "teardown did nothing" — both would produce the same monotonically non-decreasing
+  curve. This did not affect the findings above (this section's numbers are all from the
+  Windows path, and the question being asked was only "does unbounded growth exist,"
+  which a peak-only metric can still answer), but it would silently defeat an on-device
+  run whose entire purpose is checking whether the purge steps help. The iOS harness must
+  read `task_info(TASK_VM_INFO).phys_footprint` instead — current memory, and the same
+  figure Jetsam itself meters. Counting this alongside the other three instrument
+  failures already on record for this milestone (the 64-bit `HANDLE` truncation that
+  silently zeroed every RSS reading in run 1, and the two broken style-bleed canaries),
+  this is a fourth case of "the instrument needed checking before the result did."

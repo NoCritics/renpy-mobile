@@ -5,7 +5,10 @@ vendor/
 harness/assets/
 harness/out/
 harness/games/*/game/big.png
+harness/games/*/game/cache/
 *.pyc
+*.rpyc
+*.rpyb
 __pycache__/
 .DS_Store
 saves/

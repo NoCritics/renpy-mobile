@@ -123,7 +123,7 @@ nothing meaningful, and idles. It is the default basedir at cold launch and the 
 target when a game exits.
 
 Like every basedir Ren'Py boots into, it must ship a real `game/` subdirectory:
-`bootstrap.py:315` calls `path_to_gamedir()` *before* the restart loop even starts, so
+`bootstrap.py:334` calls `path_to_gamedir()` *before* the restart loop even starts, so
 this is a hard requirement of the very first cold launch, not only of later switches.
 
 This exists so that Ren'Py and SDL are **always in their normal operating mode**. The
@@ -149,7 +149,7 @@ handles that correctly.
                                     │
                                  bootstrap loop catches it
                                  renpy.reload_all()
-                                 purge_engine_state()          ← ours, sys.modules/sys.path only
+                                 purge_engine_state()          ← ours, sys.modules only (§8)
                                  get_alternate_base()          ← ours, returns next_basedir
                                  renpy.main.main()
  LibraryWindow.isHidden = true ◀─ bridge callback: gameDidStart
@@ -270,11 +270,11 @@ not plumbing.
 
 Verified against `renpy/bootstrap.py` at 8.5.3:
 
-- The restart loop is at line 355; the `finally` that calls `im.cache.quit()`,
-  `draw.quit()` and `audio.audio.quit()` is at line 409, **outside** the loop. Nothing
+- The restart loop is at line 373; the `finally` that calls `im.cache.quit()`,
+  `draw.quit()` and `audio.audio.quit()` is at line 427, **outside** the loop. Nothing
   is torn down between games. Cleanup is entirely our responsibility.
-- `except QuitException: exit_status = e.status` at line 393 exits the loop and reaches
-  `sys.exit()` at line 407. **A game's own Quit button would terminate the app.** We hook
+- `except QuitException: exit_status = e.status` at line 411 exits the loop and reaches
+  `sys.exit()` at line 425. **A game's own Quit button would terminate the app.** We hook
   `config.quit_action` to route to quit-to-library instead.
 
 `base/shell/purge.py` runs between games, at two distinct hook points. What follows is
@@ -286,8 +286,10 @@ up to 100 consecutive A→B/B→A switches.
 from it, including `get_alternate_base` and the post-reload purge — runs *after*
 `renpy.reload_all()`, by which point the outgoing game's renderer, audio subsystem and
 caches have already been replaced by freshly constructed, empty objects. Cleanup at that
-point has nothing live left to act on beyond `sys.modules`/`sys.path`, which persist
-across `reload_all()` regardless. The outgoing game's actual GL surfaces, audio buffers
+point has nothing live left to act on beyond `sys.modules`, which persists across
+`reload_all()` regardless (`sys.path` is also filtered at this hook, but bootstrap.py
+resets it unconditionally on every pass, so that filter has no observable effect — see
+below). The outgoing game's actual GL surfaces, audio buffers
 and font caches remain live and reachable only *before* `UtterRestartException` is
 raised — measured on desktop as the call site that triggers the restart
 (`lifecycle._restart()`). This is the single most transferable lesson from Milestone A:
@@ -299,17 +301,22 @@ point, not in the post-reload hook, or it silently does nothing.
 
 - **Necessary** — the only step that measurably fixed a reported failure: purge every
   `sys.modules` entry whose `__file__` resolves under the previous game's
-  `<basedir>/game` directory, and strip the matching entries from `sys.path`. Scoped to
-  `<basedir>/game`, **not** `<basedir>` itself — the shell project's own basedir is the
-  SDK/app root, and purging "everything under the previous basedir" measurably purges
-  the running interpreter's own modules out from under itself on the very first
-  shell→game switch (reproduced on desktop: `ModuleNotFoundError: No module named
-  '__main__'`, engine exit status 1). Scoping to `game/` is not a weaker version of
-  purging the whole basedir; it is the scope that actually matches how games load
-  (`config.gamedir == basedir/game`, and every game does
+  `<basedir>/game` directory. Scoped to `<basedir>/game`, **not** `<basedir>` itself —
+  the shell project's own basedir is the SDK/app root, and purging "everything under the
+  previous basedir" measurably purges the running interpreter's own modules out from
+  under itself on the very first shell→game switch (reproduced on desktop:
+  `ModuleNotFoundError: No module named '__main__'`, engine exit status 1). Scoping to
+  `game/` is not a weaker version of purging the whole basedir; it is the scope that
+  actually matches how games load (`config.gamedir == basedir/game`, and every game does
   `sys.path.insert(0, renpy.config.gamedir)`). After this fix, `sys.modules`
   contamination was confirmed gone over 200 launches across two independent 100-cycle
-  runs — zero contamination in either.
+  runs — zero contamination in either. (The implementation also strips the matching
+  entries from `sys.path` at this same hook, but that is belt-and-braces, not part of
+  the fix: `bootstrap.py:387` resets `sys.path = list(original_sys_path)`
+  unconditionally, eight lines after it calls `get_alternate_base()`, in the same
+  `try`, before any import happens — so whatever this hook does to `sys.path` has no
+  observable effect on the running interpreter. Only the `sys.modules` purge is
+  load-bearing.)
 - **Measured unnecessary here:** `renpy.display.im.cache.clear()` and
   `renpy.text.font.free_memory()` ran cleanly but produced no measurable RSS effect;
   `renpy.display.render.free_memory()`, `renpy.audio.music.stop()` and
@@ -323,17 +330,23 @@ point, not in the post-reload hook, or it silently does nothing.
 live):
 
 - **Necessary, if any per-switch teardown of live objects is to happen at all** — six
-  calls mirroring Ren'Py's own process-exit sequence (`bootstrap.py:409-419`), run
-  mid-session instead of at process exit: stop audio (all channels), stop video, free
-  fonts, quit the image cache, quit the renderer (`renpy.display.draw.quit()`), quit the
-  audio subsystem. All six were measured to succeed, every switch, over 100 consecutive
-  switches, with zero tracebacks — including `renpy.display.draw.quit()` followed by the
+  calls, run mid-session instead of at process exit: stop audio (all channels), stop
+  video, free fonts, quit the image cache, quit the renderer
+  (`renpy.display.draw.quit()`), quit the audio subsystem. Only **three** of these six —
+  quit the image cache, quit the renderer, quit the audio subsystem — actually appear in
+  Ren'Py's own process-exit sequence (`bootstrap.py:427-438`); the other three (stop
+  audio, stop video, free fonts) have no engine-authored counterpart there and are ours,
+  added because the engine's own teardown, which only ever runs once at process exit,
+  does not cover everything a live game leaves behind mid-session. All six were measured
+  to succeed, every switch, over 100 consecutive switches, with zero tracebacks —
+  including `renpy.display.draw.quit()` followed by the
   next restart pass re-initialising the renderer, which was the most uncertain of the six
   going in and turned out to be safe.
 - **They do not fix the memory-growth failure** (below), and by the letter of "only add
   what a measured failure justifies" they have no such justification — they are kept
-  anyway because they are Ren'Py's own documented teardown and have now been measured
-  safe. The iOS port must **re-measure these six on-device rather than inherit this
+  anyway because they have now been measured safe over 100 consecutive switches (three of
+  them additionally being Ren'Py's own documented teardown, the other three ours). The
+  iOS port must **re-measure these six on-device rather than inherit this
   result in either direction**: RSS on Windows does not see driver-side GL allocations,
   and iOS runs a categorically different graphics stack (MetalANGLE over Metal, not
   Windows OpenGL) — a null effect here is not evidence they are safe to drop on iOS, and
@@ -445,6 +458,19 @@ bundled one, because the SDK ships a stripped, `.pyc`-only standard library with
 `unittest` module. The `renios` build is likely to have the same property; plan the iOS
 harness's Python-side assertions (if any run inside the embedded interpreter rather than
 purely as XCTest/Swift checks) accordingly.
+
+**The memory instrument must not be ported as-is.** The desktop harness's POSIX RSS
+fallback (`shell/vnshell/harness.py:_rss_bytes`) reads `resource.getrusage(...).ru_maxrss`
+— *peak* resident set size since process start, not current RSS. It can only ever
+increase, so it cannot distinguish "teardown is releasing memory" from "teardown is
+doing nothing": both would read the same monotonically non-decreasing curve. That
+happens not to matter for what the desktop harness needed to prove (that unbounded
+growth exists at all), but it would silently defeat the entire purpose of an on-device
+run, which is to find out whether the purge steps in §8 actually help. The iOS harness
+must instead read `task_info(TASK_VM_INFO).phys_footprint` — *current* memory, and the
+same figure the kernel's Jetsam mechanism itself uses to decide whether to kill the
+process, making it the more meaningful number on this platform even setting the
+peak-vs-current issue aside.
 
 Two sentinel games, cycled 50–100 times:
 
@@ -558,7 +584,7 @@ the App Store; it does not affect sideloaded v1.
 | Risk | Mitigation |
 |---|---|
 | CI cannot build the renios Xcode project unattended | M0 exists to find this out first, before anything is built on top of it |
-| `reload_all()`-based switching leaves stale Python-level state between games | **Resolved on desktop**, not just mitigated: scoping the `sys.modules`/`sys.path` purge to `<basedir>/game` (§8) eliminates it, verified over 100 consecutive switches with zero contamination across two independent 100-cycle runs, engine exit 0 every time. The earlier fallback of "one game per app launch" is **not needed** and is removed. One caveat carried forward: mutable style state (`style.default` and similar) was never successfully exercised as a contamination surface and remains untested, not confirmed clean (§8, §10.1) |
+| `reload_all()`-based switching leaves stale Python-level state between games | **Resolved on desktop**, not just mitigated: scoping the `sys.modules` purge to `<basedir>/game` (§8) eliminates it, verified over 100 consecutive switches with zero contamination across two independent 100-cycle runs, engine exit 0 every time. The earlier fallback of "one game per app launch" is **not needed** and is removed. One caveat carried forward: mutable style state (`style.default` and similar) was never successfully exercised as a contamination surface and remains untested, not confirmed clean (§8, §10.1) |
 | Native per-switch memory growth causes Jetsam kills on switching | **Not resolved.** Measured on the desktop harness at ~22 MB/switch, linear, no plateau, across two independent 100-cycle runs and both available teardown hook points (§8) — moving teardown to the theoretically-correct pre-restart hook did not change the rate. The leak is native (inside Ren'Py's own C/GL/SDL layer) and unreachable from the shell layer at either hook point available to it; fixing it would require modifying `renpy/`, which is out of scope. From a ~200 MB baseline this is on the order of 54 switches before a 1.4 GB Jetsam ceiling, using minimal synthetic games — real visual novels would likely reach it sooner. The app cannot currently switch games freely for an unbounded session; some form of switch limit or other mitigation is needed, but which one is a product decision not made in this document. The harness must be re-run on-device before trusting this number either way, since MetalANGLE/Metal is a categorically different graphics stack from the Windows/OpenGL driver this was measured against |
 | Debugging without a Mac | Harness runs in CI; a macOS VM or short cloud-Mac rental is available as an escalation, never a dependency |
 | Case-sensitivity differences between simulator and device filesystems | Unverified. iOS device APFS is case-insensitive by default, so this is likely a non-issue; the harness will reveal it if not. Not designed around pre-emptively |
