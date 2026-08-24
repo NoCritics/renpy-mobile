@@ -42,6 +42,8 @@ jobs:
           ls -la build/xcode/*/base/game | head -20
           echo "=== schemes ==="
           xcodebuild -list -project build/xcode/*/*.xcodeproj
+          echo "=== bundle id / product name (record, do not fix here) ==="
+          grep -h "PRODUCT_BUNDLE_IDENTIFIER\|PRODUCT_NAME" build/xcode/*/*.xcodeproj/project.pbxproj | sort -u
 
       - name: Inventory renios
         run: |
