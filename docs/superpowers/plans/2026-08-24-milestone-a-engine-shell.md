@@ -132,6 +132,7 @@ vendor/
 .rig/
 harness/assets/
 harness/out/
+harness/games/*/game/big.png
 *.pyc
 __pycache__/
 .DS_Store
@@ -1309,7 +1310,10 @@ if __name__ == "__main__":
 - [ ] **Step 2: Run it**
 
 Run: `vendor/renpy-8.5.3-sdk/lib/py3-windows-x86_64/python.exe scripts/make_assets.py`
-Expected: prints the written path and a size of roughly 1–3 MB.
+Expected: prints the written path and a size in the tens of kilobytes. The file is
+small because solid-colour rows compress extremely well — that is fine and expected. What
+matters is the *decoded* size: 2048x2048 RGBA is ~16 MB of texture regardless of how well
+the PNG compresses, and texture pressure is the only reason this image exists.
 
 - [ ] **Step 3: Write game A**
 
