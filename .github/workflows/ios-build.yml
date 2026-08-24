@@ -30,6 +30,19 @@ jobs:
       - name: Fetch dependencies
         run: bash scripts/ios/fetch_ios_deps.sh
 
+      - name: Generate Xcode project
+        run: bash scripts/ios/generate_xcode.sh
+
+      - name: Inspect generated project
+        run: |
+          find build/xcode -maxdepth 3 | sort | head -60
+          echo "=== base/ contents ==="
+          ls -la build/xcode/*/base | head -30
+          echo "=== is our game in base/? ==="
+          ls -la build/xcode/*/base/game | head -20
+          echo "=== schemes ==="
+          xcodebuild -list -project build/xcode/*/*.xcodeproj
+
       - name: Inventory renios
         run: |
           RENIOS=vendor/renios

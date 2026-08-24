@@ -1,6 +1,7 @@
 .superpowers/
 .remember/
 vendor/
+build/
 .rig/
 harness/assets/
 harness/out/
