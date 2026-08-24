@@ -725,13 +725,17 @@ $
 following is false, after the copy:
 
 - `base/main.py` exists **and** contains `NoGameDirectory` (i.e. is ours, not Ren'Py's).
-- `base/vnshell/` exists and contains `lifecycle.py`, `purge.py`, `mailbox.py`,
-  `state.py`, `transports.py`.
+- `base/vnshell/` exists and contains all seven modules: `__init__.py`, `harness.py`,
+  `lifecycle.py`, `purge.py`, `mailbox.py`, `state.py`, `transports.py`.
 - `base/game/` exists and is non-empty.
 - `base/renpy/` exists.
 
 Each of these is a real gate, not a log line: every one is a `[ ... ] || { echo ...; exit
 1; }` (or equivalent), so a false condition stops the job before packaging ever runs.
+
+*(Revised after review — see "Fix round" below. The list originally checked only five of
+the seven modules, omitting `__init__.py` — whose absence breaks `import vnshell` outright
+— and `harness.py`.)*
 
 ## CI runs (evidence trail)
 
@@ -784,10 +788,12 @@ OK: Payload/VNPlayer.app/base/main.py contains NoGameDirectory -- this is our ma
 === shell layer verified in build/VNPlayer.ipa ===
 ```
 
-(The CI guard's `vnshell` regex checks 5 of the 7 files present — `harness.py` and
-`__init__.py` are not individually asserted at the `.ipa` level, though they are asserted
-to exist in `base/vnshell/` by `overlay_shell.sh` before packaging, and both are present
-in the packaged `.ipa` — confirmed below.)
+*(The output above is from the original run, 32747837073, before the fix round below. At
+that time the CI guard's `vnshell` check covered 5 of the 7 files present — `harness.py`
+and `__init__.py` were not individually asserted at the `.ipa` level, though both were
+asserted to exist in `base/vnshell/` by `overlay_shell.sh` before packaging, and both were
+already present in the packaged `.ipa` at that point too — confirmed below. The "Fix round"
+section records the corrected guard checking all seven, and quotes its output.)*
 
 ## Independent re-verification (not trusting the CI script's own assertions)
 
@@ -836,20 +842,120 @@ directory entry itself (`main.py` replaced an existing entry, not a new one).
 
 ## Files changed (Task 4)
 
-- `scripts/ios/overlay_shell.sh` (new) — the overlay script.
+- `scripts/ios/overlay_shell.sh` (new, later revised in the fix round to assert all seven
+  `vnshell` modules) — the overlay script.
 - `.github/workflows/ios-build.yml` — added "Overlay shell layer" between "Generate Xcode
   project" and "Inspect generated project"; added "Verify shell layer is in the .ipa"
-  between "Package unsigned .ipa" and "Upload .ipa".
-- `docs/IOS-BUILD.md` — this section.
+  between "Package unsigned .ipa" and "Upload .ipa". Fix round added "Assert pre-overlay
+  base/main.py is Ren'Py's, not ours" (before the overlay), expanded the `.ipa` guard's
+  `vnshell` check to all seven modules, and added the scoped `__pycache__`/`*.pyc` gate.
+- `docs/IOS-BUILD.md` — this section, including the fix round.
+
+No new files were added in the fix round; the same two files (`overlay_shell.sh`,
+`ios-build.yml`) were revised.
+
+## Fix round (review response)
+
+Code review on the first Task 4 round found two Important gaps, plus authorized one bounded
+addition. All three are fixed and re-verified live in CI, not just reasoned about.
+
+**1. The guard covered 5 of 7 `vnshell` modules.** `__init__.py` (missing it breaks `import
+vnshell` outright) and `harness.py` were not individually checked, in either
+`overlay_shell.sh`'s assertion loop or the `.ipa`-level regex. Both scripts now iterate all
+seven: `__init__.py`, `harness.py`, `lifecycle.py`, `purge.py`, `mailbox.py`, `state.py`,
+`transports.py`.
+
+**2. The `NoGameDirectory`-absent-from-stock-`main.py` claim was inferred, never observed
+live.** The original evidence was a source-code trace of `vendor/renpy-8.5.3-sdk/renpy.py`
+— correct, but never checked against the actual `base/main.py` that CI itself generates,
+because the overlay ran immediately after generation and nothing captured the pre-overlay
+file. Fixed by adding a new step, **"Assert pre-overlay `base/main.py` is Ren'Py's, not
+ours"**, immediately after "Generate Xcode project" and before the overlay runs. It greps
+the as-generated `base/main.py` for `NoGameDirectory`, logs the file's size, and fails the
+build if the marker is present — turning the discrimination claim into a fact re-confirmed
+on every build, not a one-time inference. It would also catch the day a future Ren'Py
+release starts generating a `main.py` that happens to contain the marker, which would
+otherwise silently destroy the guard's ability to discriminate downstream.
+
+**3. (Authorized addition) No regression gate for `__pycache__`/`*.pyc` reaching the
+`.ipa`.** Previously confirmed only by a manual one-off check on a downloaded artifact.
+Added to the "Verify shell layer is in the .ipa" step, scoped to entries under `vnshell/`
+in the archive listing.
+
+### CI runs (fix round)
+
+Three runs, in order:
+
+1. **[32769659714](https://github.com/NoCritics/renpy-mobile/actions/runs/32769659714) —
+   RED.** Fixes 1 and 2 above landed clean; the pycache gate (fix 3), as first written,
+   checked the *entire* `.ipa` listing for `__pycache__`/`*.pyc` rather than scoping to
+   `vnshell/`. It correctly failed — against `Payload/VNPlayer.app/base/lib/python3.12/*.pyc`,
+   Ren'Py's own precompiled stdlib, legitimately shipped and unrelated to
+   `shell/vnshell/`'s exclusion requirement. This is the gate doing its job: it caught an
+   overbroad condition before it merged clean, on the very first CI check of that
+   assertion.
+2. Fix: scoped the pycache/`.pyc` grep to listing lines containing `vnshell/`.
+3. **[32770078436](https://github.com/NoCritics/renpy-mobile/actions/runs/32770078436) —
+   GREEN.** All 15 steps (13 from the original round + the new pre-overlay assertion +
+   the same "Verify shell layer is in the .ipa" step, now checking all seven modules and
+   the scoped pycache gate).
+
+### The pre-overlay assertion, live (closing the inference gap)
+
+"Assert pre-overlay `base/main.py` is Ren'Py's, not ours" step output, run 32770078436,
+verbatim:
+
+```
+Pre-overlay build/xcode/VNPlayer/base/main.py is 8922 bytes (Ren'Py's own ios_populate output, not yet overlaid).
+OK: pre-overlay build/xcode/VNPlayer/base/main.py does not contain NoGameDirectory -- confirmed on THIS build, not inferred from source alone. NoGameDirectory remains a valid marker for 'this is ours, not Ren'Py's'.
+```
+
+8,922 bytes matches Task 2's recorded figure for Ren'Py's generated `main.py` exactly. This
+is now a fact this build produced, not a source-trace inference about a different Ren'Py
+copy.
+
+### "Verify shell layer is in the .ipa", all seven modules, live
+
+Run 32770078436, verbatim (all matched paths the corrected guard printed):
+
+```
+=== vnshell/ modules present in build/VNPlayer.ipa ===
+      147  08-24-2026 19:47   Payload/VNPlayer.app/base/vnshell/__init__.py
+     6260  08-24-2026 19:47   Payload/VNPlayer.app/base/vnshell/harness.py
+     6304  08-24-2026 19:47   Payload/VNPlayer.app/base/vnshell/lifecycle.py
+    12490  08-24-2026 19:47   Payload/VNPlayer.app/base/vnshell/purge.py
+     4136  08-24-2026 19:47   Payload/VNPlayer.app/base/vnshell/mailbox.py
+     1035  08-24-2026 19:47   Payload/VNPlayer.app/base/vnshell/state.py
+     1636  08-24-2026 19:47   Payload/VNPlayer.app/base/vnshell/transports.py
+=== locating base/main.py inside build/VNPlayer.ipa ===
+Found: Payload/VNPlayer.app/base/main.py
+OK: Payload/VNPlayer.app/base/main.py contains NoGameDirectory -- this is our main.py
+=== confirming no __pycache__/*.pyc reached build/VNPlayer.ipa under vnshell/ ===
+OK: no __pycache__/*.pyc under vnshell/ anywhere in build/VNPlayer.ipa
+=== shell layer verified in build/VNPlayer.ipa ===
+```
+
+### `.ipa` size (fix round)
+
+Downloaded artifact from run 32770078436: **28,025,375 bytes**, vs. this task's own earlier
+figure of 28,019,887 bytes (run 32747837073) — **+5,488 bytes**. This delta is **not**
+attributable to the fix-round changes above: `base/main.py` and every `base/vnshell/*.py`
+file are byte-identical between the two downloads (verified directly:
+`Payload/VNPlayer.app/base/main.py` is 2,698 bytes both times, and every `vnshell/*.py`
+file matches its earlier size exactly), and the fix round touched only CI assertion logic,
+not overlay content. Between the two runs, unrelated commits landed on `milestone-b` for
+Task 5 (`shell: render proof-of-life diagnostics instead of a bare black screen`, device
+log capture) that changed `shell-project/game/` content — accounting for the size and
+uncompressed-content growth instead. Entry count held at **1,432 files** both times.
 
 ## Not determined (Task 4)
 
-- Whether the app actually boots and renders on a real device — no physical device or
-  Apple ID available in CI; out of scope here, same as Task 3.
+- Whether the app actually boots and renders on a real device — determined by Task 5
+  (below): **confirmed working** on a physical iPhone.
 - Whether `shell/vnshell/lifecycle.install()` and the rest of the shell's runtime behavior
   (not just its presence on disk) behaves the same on iOS as on the 200-switch desktop
-  rig — this task proves the files reach the bundle unchanged, not that they execute
-  correctly there. That is a device-testing question outside CI's reach.
+  rig — this task proves the files reach the bundle unchanged; Task 5 is the first evidence
+  they also execute correctly there (`vnshell: imported OK`, interaction loop alive).
 
 ---
 
