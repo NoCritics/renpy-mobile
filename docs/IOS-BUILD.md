@@ -307,3 +307,185 @@ whichever task first needs to produce a buildable Xcode project.
   system Python).
 - Whether the workflow's push trigger successfully triggers from a fork (untested; only
   exercised from `NoCritics/renpy-mobile` itself, which is the repo, not a fork of it).
+
+---
+
+# Task 2 — headless Xcode project generation
+
+`scripts/ios/generate_xcode.sh` drives Ren'Py's own `ios_create` and `ios_populate`
+launcher commands (`launcher/game/ios.rpy`) against `shell-project/`, producing a
+generated Xcode project under `build/xcode/VNPlayer/`. Wired into `ios-build.yml`'s
+`discover` job as two new steps, "Generate Xcode project" and "Inspect generated
+project", inserted directly after "Fetch dependencies".
+
+**Both commands run headlessly, without incident, on the first CI attempt after the
+brief's own command line was corrected.** The brief as originally written
+(`ios_create "$PROJECT" --destination "$DEST"`) cannot work — `ios.rpy:430-431` declares
+both `project` and `destination` as positional arguments, not a `--destination` flag —
+so the script uses the positional form from the start; this was never observed to fail
+in CI because it was caught by reading `ios.rpy`'s source before the first push (see
+`task-2-context.md` §1). No other command-line correction was needed.
+
+## CI runs (evidence trail)
+
+All runs: https://github.com/NoCritics/renpy-mobile/actions/workflows/ios-build.yml
+
+| Run | Outcome | What happened |
+|---|---|---|
+| [32742797871](https://github.com/NoCritics/renpy-mobile/actions/runs/32742797871) | **GREEN** | First attempt. `generate_xcode.sh` committed with the correction sheet's fixes (positional args, `DEST` = project dir itself, `rm -rf` before creating, SDK-bundled Python) applied from the outset. `ios_create` completed in 9s, `ios_populate` in 4s. `base/`, `base/game/`, `base/main.py` all confirmed present in the generated tree. Scheme name confirmed as `VNPlayer` from real `xcodebuild -list` output. |
+| [32743037562](https://github.com/NoCritics/renpy-mobile/actions/runs/32743037562) | **GREEN** | Added a `grep` for `PRODUCT_BUNDLE_IDENTIFIER` / `PRODUCT_NAME` to the same inspection step, to record (not fix) the placeholder bundle id per correction sheet §6. `ios_create` completed in 5s, `ios_populate` in 3s — confirms the first run's timings were not a fluke and gives two independent samples. Bundle id and scheme name reproduced identically. |
+
+Both runs are green; no failure mode was hit for this task. The two failure modes the
+brief and correction sheet name as worth distinguishing (CLI surface mismatch vs. an
+empty/incomplete `base/`) were both **not encountered** — evidence below.
+
+## Timings (`ios_create` and `ios_populate` timed separately, wall-clock, via `date +%s`
+around each command)
+
+| Run | `ios_create` | `ios_populate` |
+|---|---|---|
+| 32742797871 | 9s | 4s |
+| 32743037562 | 5s | 3s |
+
+Both phases complete in single-digit seconds on a `macos-15` runner. Note `ios_create`
+itself ends by calling `ios_populate(p, gui=gui, target=target)` internally
+(`ios.rpy:156`), so the Distributor actually runs during the `ios_create` phase too; the
+standalone `ios_populate` call is a second, redundant run of the same Distributor logic
+— this is why its own timing (3-4s) is smaller than `ios_create`'s (5-9s), which pays for
+both the project-copy/rename step and its own internal populate pass. This matches
+correction sheet §8's prediction exactly.
+
+## Generated tree layout
+
+From run 32742797871's `=== result ===` (`find "$DEST" -maxdepth 2 | sort`, `$DEST` =
+`build/xcode/VNPlayer`):
+
+```
+build/xcode/VNPlayer
+build/xcode/VNPlayer/base
+build/xcode/VNPlayer/base/game
+build/xcode/VNPlayer/base/lib
+build/xcode/VNPlayer/base/main.py
+build/xcode/VNPlayer/base/renpy
+build/xcode/VNPlayer/Frameworks
+build/xcode/VNPlayer/Frameworks/MetalANGLE.xcframework
+build/xcode/VNPlayer/IAPHelper.m
+build/xcode/VNPlayer/Info.plist
+build/xcode/VNPlayer/Launch Screen.storyboard
+build/xcode/VNPlayer/LaunchImage-background.png
+build/xcode/VNPlayer/LaunchImage-foreground.png
+build/xcode/VNPlayer/Log.m
+build/xcode/VNPlayer/main.c
+build/xcode/VNPlayer/Media.xcassets
+build/xcode/VNPlayer/Media.xcassets/AppIcon.appiconset
+build/xcode/VNPlayer/prebuilt
+build/xcode/VNPlayer/prebuilt/debug
+build/xcode/VNPlayer/prebuilt/release
+build/xcode/VNPlayer/VideoPlayer.m
+build/xcode/VNPlayer/VNPlayer.xcodeproj
+build/xcode/VNPlayer/VNPlayer.xcodeproj/project.pbxproj
+```
+
+**`base/` verified populated, not just exit-code-0-trusted.** The "Inspect generated
+project" step's `ls -la build/xcode/*/base` (same run) shows:
+
+```
+total 24
+drwxr-xr-x   6 runner  staff   192 Aug 24 15:06 .
+drwxr-xr-x  15 runner  staff   480 Aug 24 15:06 ..
+drwxr-xr-x   8 runner  staff   256 Aug 24 15:06 game
+drwxr-xr-x   3 runner  staff    96 Aug 24 15:06 lib
+-rw-r--r--   1 runner  staff  8922 Aug 24 15:06 main.py
+drwxr-xr-x  68 runner  staff  2176 Aug 24 15:06 renpy
+```
+
+`base/game/` (`ls -la build/xcode/*/base/game`) contains our shell project's own files,
+not placeholder content — confirming the Distributor packaged `shell-project/`, not
+Ren'Py's own launcher/prototype game:
+
+```
+total 40
+drwxr-xr-x  8 runner  staff   256 Aug 24 15:06 .
+drwxr-xr-x  6 runner  staff   192 Aug 24 15:06 ..
+drwxr-xr-x  6 runner  staff   192 Aug 24 15:06 cache
+-rw-r--r--  1 runner  staff   266 Aug 24 15:06 options.rpy
+-rw-r--r--  1 runner  staff  1422 Aug 24 15:06 options.rpyc
+-rw-r--r--  1 runner  staff     9 Aug 24 15:06 script_version.txt
+-rw-r--r--  1 runner  staff   583 Aug 24 15:06 script.rpy
+-rw-r--r--  1 runner  staff  1288 Aug 24 15:06 script.rpyc
+```
+
+`options.rpy` and `script.rpy` are `shell-project/game/`'s own two source files (see
+Task 2 context §"shell-project" layout) — the `.rpyc` siblings are Ren'Py's own
+compilation output, and `cache/` is generated. This is direct evidence `base/game/`
+holds our project, not an empty or placeholder tree.
+
+## The scheme name (verbatim, for Task 3)
+
+From run 32742797871's `xcodebuild -list -project build/xcode/VNPlayer/VNPlayer.xcodeproj`
+(reproduced identically in run 32743037562):
+
+```
+Information about project "VNPlayer":
+    Targets:
+        VNPlayer
+
+    Build Configurations:
+        Debug
+        Release
+
+    If no build configuration is specified and -scheme is not passed then "Release" is used.
+
+    Schemes:
+        VNPlayer
+```
+
+**Scheme name: `VNPlayer`** (also the target name and the `.xcodeproj` basename). This
+matches correction sheet §5's prediction from `shell-project/game/options.rpy`'s
+`config.name = "VNPlayer"` exactly — confirmed from real output, not assumed.
+
+## Bundle identifier and product name (recorded, not fixed — Task 3's job)
+
+From the same runs' `grep -h "PRODUCT_BUNDLE_IDENTIFIER\|PRODUCT_NAME"
+build/xcode/*/*.xcodeproj/project.pbxproj`:
+
+```
+PRODUCT_BUNDLE_IDENTIFIER = com.domain.VNPlayer;
+PRODUCT_NAME = VNPlayer;
+```
+
+Matches correction sheet §6's prediction (`org.renpy.prototype` → `com.domain.<shortname>`)
+exactly. `com.domain.VNPlayer` is Ren'Py's placeholder; per the correction sheet this is
+Task 3's responsibility to override on the `xcodebuild` command line, not something Task 2
+edits.
+
+## Neither failure mode named in the brief was encountered
+
+- **CLI surface mismatch:** not encountered. `ios_create` and `ios_populate` are
+  registered exactly as `ios.rpy` describes; the correction sheet's positional-argument
+  fix, applied before the first push, was sufficient. No `--help` output was needed
+  because no "unrecognized arguments" error occurred.
+- **Empty/incomplete `base/`:** not encountered. `base/`, `base/game/`, and `base/main.py`
+  all exist and `base/game/` holds our actual project files (verified above, not inferred
+  from exit code 0).
+
+## Files changed
+
+- `scripts/ios/generate_xcode.sh` (new) — the generation script.
+- `.github/workflows/ios-build.yml` — added "Generate Xcode project" and "Inspect
+  generated project" steps after "Fetch dependencies".
+- `.gitignore` — added `build/` (the script writes `build/xcode/`, which must not be
+  committed).
+- `docs/IOS-BUILD.md` — this section.
+
+## Not determined (Task 2)
+
+- Whether `ios_create`/`ios_populate` remain headless-safe if `shell-project/` grows
+  large numbers of assets — both runs used the current, minimal two-file
+  `shell-project/game/` (`options.rpy`, `script.rpy`); timing and memory behavior at
+  realistic game size is untested.
+- Whether the generated project actually **builds** with `xcodebuild build`/`archive` —
+  out of scope for Task 2, which only proves project *generation*; that is Task 3's job.
+- Contents of `base/lib/` and `base/renpy/` beyond their directory names — not opened,
+  only their presence and the presence of `base/main.py` was verified, per the brief's
+  Step 3 checklist.
