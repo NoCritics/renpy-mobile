@@ -119,19 +119,20 @@ func spikeWriteCommand(_ payload: [String: Any]) -> Bool {
     let url = docs.appendingPathComponent("vnplayer-commands.jsonl")
 
     guard let data = try? JSONSerialization.data(withJSONObject: payload),
-          var line = String(data: data, encoding: .utf8) else {
+          let line = String(data: data, encoding: .utf8) else {
         return false
     }
-    line += "
-"
+    // A newline byte, appended rather than written as an escape.
+    var blob = Data(line.utf8)
+    blob.append(0x0A)
 
     // Append if it exists, create if not. Python consumes the file on read, so it
     // routinely will not exist.
     if let handle = try? FileHandle(forWritingTo: url) {
         defer { try? handle.close() }
         handle.seekToEndOfFile()
-        handle.write(Data(line.utf8))
+        handle.write(blob)
         return true
     }
-    return (try? line.write(to: url, atomically: true, encoding: .utf8)) != nil
+    return (try? blob.write(to: url)) != nil
 }
