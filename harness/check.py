@@ -7,10 +7,11 @@ import os
 import sys
 
 OUT = os.path.join(os.path.dirname(__file__), "out")
-# Ren'Py's engine-wide default, from renpy/common/00style.rpy:142. Game A overrides it
-# to GAME_A_TEXT_SIZE; a clean game B must read the default back.
-RENPY_DEFAULT_TEXT_SIZE = 22
-GAME_A_TEXT_SIZE = 137
+# Each game declares its own config.name in its options.rpy. This assertion is
+# self-validating: if game A stops reporting "Sentinel A", the instrument is broken and
+# game B's reading means nothing — which is exactly the failure mode that let two earlier
+# canary designs report meaningless verdicts.
+EXPECTED_CONFIG_NAME = {"A": "Sentinel A", "B": "Sentinel B"}
 
 RSS_GROWTH_LIMIT = 1.30  # last cycle may not exceed the first by more than 30%
 
@@ -43,17 +44,12 @@ def main() -> None:
                 f"expected {expected!r} — sys.modules contamination"
             )
 
-        if game == "A" and record["default_size"] != GAME_A_TEXT_SIZE:
+        expected_name = EXPECTED_CONFIG_NAME[game]
+        if record["config_name"] != expected_name:
             failures.append(
-                f"cycle {i}: game A reports text size {record['default_size']}, expected "
-                f"{GAME_A_TEXT_SIZE} — the style canary itself is broken, so any "
-                "style-bleed verdict below is meaningless"
-            )
-
-        if game == "B" and record["default_size"] != RENPY_DEFAULT_TEXT_SIZE:
-            failures.append(
-                f"cycle {i}: game B has text size {record['default_size']}, expected the "
-                f"engine default {RENPY_DEFAULT_TEXT_SIZE} — style bleed from game A"
+                f"cycle {i}: game {game} reports config.name "
+                f"{record['config_name']!r}, expected {expected_name!r} — per-game init "
+                "state survived the switch"
             )
 
         if game == "B" and record["leaked_store_var"] is not None:

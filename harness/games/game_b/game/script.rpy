@@ -9,12 +9,16 @@ init python:
         record = {
             "game": game,
             "sentinel_value": sentinel.VALUE,
-            # Deliberately NOT style.default.font. Ren'Py's own 00style.rpy:139 sets
-            # font "DejaVuSans.ttf" as the engine-wide default for every game, so a
-            # font-based canary reports "bleed" even on a perfectly clean reset —
-            # it cannot tell contamination from the baseline. Text size can: the
-            # engine default is 22 (00style.rpy:142) and game A sets 137.
-            "default_size": int(style.default.size),
+            # Per-game init state, declared in each game's own options.rpy. If game B
+            # ever reads "Sentinel A", init-time state survived the switch.
+            #
+            # Two earlier canary designs failed here and are worth not repeating.
+            # style.default.font matched Ren'Py's own engine-wide default
+            # (00style.rpy:139), so it reported bleed even on a clean reset.
+            # style.default.size was set but never read back, because mutating a style
+            # outside an init block requires style.rebuild() to take effect. config.name
+            # needs no such ceremony: each game already declares its own.
+            "config_name": str(renpy.config.name),
             "saves_dir": renpy.__main__.path_to_saves(gamedir),
             "leaked_store_var": getattr(store, "game_a_marker", None),
         }
