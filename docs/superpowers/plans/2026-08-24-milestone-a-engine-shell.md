@@ -1280,11 +1280,16 @@ def chunk(tag: bytes, data: bytes) -> bytes:
 def main() -> None:
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
 
+    # One solid colour per row, rather than a per-pixel pattern.
+    #
+    # What this image is for is texture-cache pressure: 2048x2048 RGBA is ~16 MB once
+    # decoded, whatever it depicts. A per-pixel Python loop over 4.2 million pixels
+    # takes minutes and reads as a hang; a per-row one takes a moment and produces an
+    # identically-sized texture.
     raw = bytearray()
     for y in range(SIZE):
-        raw.append(0)  # filter type 0
-        for x in range(SIZE):
-            raw += bytes(((x * 7) % 256, (y * 11) % 256, ((x ^ y) % 256), 255))
+        raw.append(0)  # PNG filter type 0
+        raw += bytes(((y * 7) % 256, (y * 11) % 256, (y * 13) % 256, 255)) * SIZE
 
     png = b"\x89PNG\r\n\x1a\n"
     png += chunk(b"IHDR", struct.pack(">IIBBBBB", SIZE, SIZE, 8, 6, 0, 0, 0))
