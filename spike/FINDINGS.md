@@ -49,10 +49,69 @@ The real test is on hardware: the diagnostic screen calls
 `ctypes.CDLL(None).vnbridge_ping()` and prints either the returned constant or the actual
 exception. That is ground truth; everything above it is proxy.
 
-## Still open until a device runs it
+## ANSWERED on device: `ctypes.CDLL(None)` is NOT a viable bridge seam on iOS
 
-1. Can Python reach the C symbols via `ctypes.CDLL(None)`?
-2. Does a second `UIWindow` at `.normal + 1` coexist with SDL's, or does one blank the
+Two device runs settled it. The second carried a control, which is the only reason the
+conclusion is trustworthy.
+
+Run 1 (`vnbridge_ping` only):
+
+```
+bridge ping: FAILED (AttributeError: dlsym(RTLD_DEFAULT, vnbridge_ping): symbol not found)
+```
+
+Tempting reading: "our C symbols were stripped; use Swift `@_cdecl`, whose symbol we saw
+survive." Run 2 tested that reading against a control that must succeed:
+
+```
+control Py_Initialize:      AttributeError    <- must exist; Python is running
+swift @_cdecl vnspike_ping: AttributeError
+plain C vnbridge_ping:      AttributeError
+```
+
+**`ctypes.CDLL(None)` cannot resolve ANY symbol in this binary**, including libpython's
+own. The seam does not work here at all — the C-versus-Swift distinction was never the
+variable, and `-Wl,-export_dynamic` was never relevant.
+
+Both models recommended this approach in the architecture consultation, and it does not
+survive contact with the device. Recording that plainly: it is a good idea that is wrong
+for this platform, not a mistake in their reasoning.
+
+### The next candidate, untested
+
+Register the bridge as a **builtin Python extension module** via
+`PyImport_AppendInittab("vnbridge", PyInit_vnbridge)` **before** `Py_Initialize` runs.
+This is the textbook way to expose native code to an embedded interpreter and does not
+depend on dynamic symbol lookup at all.
+
+It looks feasible here specifically because **`main.c` is ours to modify** — it lives in
+the generated project (our artifact), and currently reads:
+
+```c
+int main(int argc, char **argv) {
+    return SDL_UIKitRunApp(argc, argv, launcher_main);
+}
+```
+
+`launcher_main` (inside prebuilt `librenpython.a`) is what calls `Py_Initialize`, so
+appending to the inittab before handing control over should be enough. Untested.
+
+## Still open, all blocked behind the bridge
+
+1. Does a second `UIWindow` at `.normal + 1` coexist with SDL's, or does one blank the
    other?
-3. Does touch pass through the transparent overlay to the game?
-4. Does a command posted from Swift arrive in Python's periodic callback?
+2. Does touch pass through the transparent overlay to the game?
+3. Does a command posted from Swift arrive in Python's periodic callback?
+
+The overlay is installed from Python, so none of these have been exercised. They are
+untested, not failed.
+
+## The methodological lesson, which cost two device cycles
+
+The first negative result came from a string-grep over a stripped Mach-O; validating that
+instrument against known-present symbols showed it measured nothing. The second came from
+a device probe **with a control**, and the control is what revealed that the real answer
+was broader than the hypothesis under test.
+
+Every probe in this project should carry a control that must succeed. Two conclusions in
+a row would have been wrong without one.
