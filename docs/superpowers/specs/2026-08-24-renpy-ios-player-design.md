@@ -55,7 +55,10 @@ game controller support, Live2D.
 | iOS forbids spawning processes | One process for the whole app lifetime. Game switching happens in-process. |
 | Target user is not a developer | Errors must be legible and actionable. Install docs are a tracked deliverable. |
 
-Pinned engine: **Ren'Py 8.5.3** (CPython 3.12.7, SDL3, MetalANGLE, FFmpeg 4.3.1).
+Pinned engine: **Ren'Py 8.5.3** (CPython 3.12.7, SDL3, MetalANGLE, FFmpeg 4.3.1). The
+CPython 3.12.7 figure is confirmed for the desktop SDK build (`vendor/renpy-8.5.3-sdk/`,
+per `docs/BUILD.md`); the iOS/`renios` build's bundled interpreter version has not been
+separately confirmed and must not be assumed identical.
 Device: arm64 only. The minimum iOS version is inherited from the `renios` prototype
 project's deployment target rather than chosen by us; we adopt whatever it sets and
 record the value in M0. For reference, the comparable shipping apps require iOS 15.5
@@ -103,11 +106,25 @@ renpy.bootstrap.bootstrap(renpy_base)
 Stock Ren'Py, patched at one seam, in one file. This keeps upgrades to new Ren'Py
 releases cheap and keeps the door open to upstreaming proper multi-game support later.
 
+`base/main.py` is loaded by Ren'Py as `renpy.__main__` — this is Ren'Py's own documented
+seam for distributor customization, not an ad hoc hook we invented. Two more
+overrides belong here, verified on the desktop harness (`docs/BUILD.md`) rather than
+assumed: `path_to_saves`, which is how per-game save isolation is actually achieved
+(§6 — superseding an earlier, incorrect assumption that `config.save_directory` was the
+right seam), and `path_to_gamedir`, overridden deliberately strictly so that a basedir
+without a proper `game/` subdirectory fails fast instead of Ren'Py silently searching
+elsewhere for one (this is also why §7's import pipeline treats "no `game/` found" as a
+hard rejection, not a fallback).
+
 ### 5.3 The bundled launcher project
 
 `base/launcher-shell/` is a minimal Ren'Py project — it creates the window, draws
 nothing meaningful, and idles. It is the default basedir at cold launch and the return
 target when a game exits.
+
+Like every basedir Ren'Py boots into, it must ship a real `game/` subdirectory:
+`bootstrap.py:315` calls `path_to_gamedir()` *before* the restart loop even starts, so
+this is a hard requirement of the very first cold launch, not only of later switches.
 
 This exists so that Ren'Py and SDL are **always in their normal operating mode**. The
 alternative — parking Python in a hand-rolled `CFRunLoopRunInMode` loop before SDL has
@@ -127,11 +144,12 @@ handles that correctly.
  user taps a game
  mailbox.post(.launch(path)) ──▶ periodic_callback drains mailbox
                                  sets shell.state.next_basedir
+                                 teardown_live_engine()        ← ours, outgoing engine still live
                                  raise UtterRestartException
                                     │
                                  bootstrap loop catches it
                                  renpy.reload_all()
-                                 purge_engine_state()          ← ours
+                                 purge_engine_state()          ← ours, sys.modules/sys.path only
                                  get_alternate_base()          ← ours, returns next_basedir
                                  renpy.main.main()
  LibraryWindow.isHidden = true ◀─ bridge callback: gameDidStart
@@ -141,7 +159,24 @@ Quit-to-library is identical with `next_basedir` set back to the launcher projec
 
 `get_alternate_base` is a **pure selector**: it reads state and returns a path. It never
 waits for input and never performs cleanup. Waiting belongs to the running launcher
-project; cleanup belongs to the purge step.
+project; cleanup belongs to the purge step — which, as measured on the desktop harness,
+is split across two hook points rather than one; see §8 for why.
+
+**In-process game switching works.** This was the single biggest open question in this
+design and it is now measured, not assumed: on the desktop harness
+(`docs/BUILD.md`), `UtterRestartException` raised from a `config.periodic_callbacks`
+handler propagates out cleanly, `reload_all()` runs, and a different game loads — over
+**100 consecutive switches**, with engine exit status 0 every time, no crash, no hang,
+and no traceback. The fallback previously carried in §14 ("one game per app launch") is
+**not needed** and has been removed from the open-risk table on that basis.
+
+The one lesson from getting this working that is load-bearing enough to call out here:
+**hook timing.** `select_next_basedir` (and therefore `get_alternate_base` and
+`purge_engine_state`) runs *after* `renpy.reload_all()`, by which point the outgoing
+game's renderer, audio subsystem and caches have already been replaced by freshly
+constructed, still-empty objects. Teardown of the *outgoing* game's live native
+resources has to happen earlier — before `UtterRestartException` is raised — or it is
+operating on the wrong objects. See §8.
 
 ### 5.5 The bridge
 
@@ -165,7 +200,7 @@ Callbacks (Python → Swift): `gameDidStart(title)`, `gameDidExit`, `gameDidFail
 ```
 Documents/
   Games/<gameId>/       basedir handed to Ren'Py as --basedir
-  Saves/<gameId>/       config.save_directory override — outside the game tree
+  Saves/<gameId>/       path_to_saves override (main.py) — outside the game tree
   Imports/<uuid>/       extraction staging; atomically moved or deleted
   library.json          library index
 Library/Caches/covers/  derived, disposable
@@ -190,9 +225,13 @@ slugging, and the user can rename it; renaming changes the display title only, n
 numeric suffix, and the import sheet shows which existing game a re-import would update
 so a false match can be declined.
 
-`config.save_directory` is overridden per game. Ren'Py's default derives from the game's
-own configured name, and generically-named games would otherwise share and overwrite each
-other's saves.
+`path_to_saves` is overridden per game, in `main.py` (§5.2) — not `config.save_directory`,
+which an earlier draft of this spec named and which is not the right seam. Ren'Py's
+default save location derives from the game's own configured name, and generically-named
+games would otherwise share and overwrite each other's saves; this was verified directly
+on the desktop harness, not just reasoned about: both sentinel games declare an
+*identical* `config.save_directory` and still land in separate, correctly isolated save
+directories under the `path_to_saves` override.
 
 `library.json` holds: `id`, `title`, `path`, `coverPath`, `sizeBytes`, `addedAt`,
 `lastPlayedAt`, `detectedEngine`, `importedComplete`, `crashCount`. It is written
@@ -238,26 +277,102 @@ Verified against `renpy/bootstrap.py` at 8.5.3:
   `sys.exit()` at line 407. **A game's own Quit button would terminate the app.** We hook
   `config.quit_action` to route to quit-to-library instead.
 
-`base/shell/purge.py` runs between games. This is a **hypothesis list**, and the test
-harness in §10 is what converts it into a verified list. Implementation proceeds by
-running the harness and adding only what it proves necessary:
+`base/shell/purge.py` runs between games, at two distinct hook points. What follows is
+the **verified list** from the desktop harness (`docs/BUILD.md`, "Purge findings"),
+not a hypothesis list — every line below was tried and its effect measured, over runs
+up to 100 consecutive A→B/B→A switches.
 
-- stop audio and video playback
-- `renpy.display.im.cache.clear()`, `renpy.display.render.free_memory()`
-- drop every `sys.modules` entry whose `__file__` resolves under the previous basedir.
-  This is deliberately scoped by path rather than by module-name prefix, so a game's
-  `utils.py` cannot leak into the next game's `utils.py`
-- determine empirically what `reload_all()` already resets — styles and stores in
-  particular — and only add what it misses
-- `gc.collect()`; log RSS before and after each cycle
+**Hook timing is load-bearing.** `select_next_basedir` — and therefore anything called
+from it, including `get_alternate_base` and the post-reload purge — runs *after*
+`renpy.reload_all()`, by which point the outgoing game's renderer, audio subsystem and
+caches have already been replaced by freshly constructed, empty objects. Cleanup at that
+point has nothing live left to act on beyond `sys.modules`/`sys.path`, which persist
+across `reload_all()` regardless. The outgoing game's actual GL surfaces, audio buffers
+and font caches remain live and reachable only *before* `UtterRestartException` is
+raised — measured on desktop as the call site that triggers the restart
+(`lifecycle._restart()`). This is the single most transferable lesson from Milestone A:
+anyone re-implementing this on iOS needs to put live-engine teardown at that earlier
+point, not in the post-reload hook, or it silently does nothing.
 
-Memory policy, given non-Pro iPhones are killed by Jetsam around 1.4–1.8 GB and a
-4K RGBA8 background is roughly 33 MB of texture:
+**Post-reload hook** (`purge_engine_state()`, after `reload_all()`, before
+`get_alternate_base()`):
+
+- **Necessary** — the only step that measurably fixed a reported failure: purge every
+  `sys.modules` entry whose `__file__` resolves under the previous game's
+  `<basedir>/game` directory, and strip the matching entries from `sys.path`. Scoped to
+  `<basedir>/game`, **not** `<basedir>` itself — the shell project's own basedir is the
+  SDK/app root, and purging "everything under the previous basedir" measurably purges
+  the running interpreter's own modules out from under itself on the very first
+  shell→game switch (reproduced on desktop: `ModuleNotFoundError: No module named
+  '__main__'`, engine exit status 1). Scoping to `game/` is not a weaker version of
+  purging the whole basedir; it is the scope that actually matches how games load
+  (`config.gamedir == basedir/game`, and every game does
+  `sys.path.insert(0, renpy.config.gamedir)`). After this fix, `sys.modules`
+  contamination was confirmed gone over 200 launches across two independent 100-cycle
+  runs — zero contamination in either.
+- **Measured unnecessary here:** `renpy.display.im.cache.clear()` and
+  `renpy.text.font.free_memory()` ran cleanly but produced no measurable RSS effect;
+  `renpy.display.render.free_memory()`, `renpy.audio.music.stop()` and
+  `renpy.display.video.movie_stop()` raised (`AttributeError`/`IndexError`) on every
+  call, because their owning subsystems (`renpy.game.interface` and friends) do not
+  exist yet at this point in the restart loop; `gc.collect()` freed ~9,700 objects per
+  switch with no measurable RSS effect. None of these are in `purge_engine_state`.
+
+**Pre-restart hook** (`teardown_live_engine()`, called just before
+`UtterRestartException` is raised, while the outgoing game's engine objects are still
+live):
+
+- **Necessary, if any per-switch teardown of live objects is to happen at all** — six
+  calls mirroring Ren'Py's own process-exit sequence (`bootstrap.py:409-419`), run
+  mid-session instead of at process exit: stop audio (all channels), stop video, free
+  fonts, quit the image cache, quit the renderer (`renpy.display.draw.quit()`), quit the
+  audio subsystem. All six were measured to succeed, every switch, over 100 consecutive
+  switches, with zero tracebacks — including `renpy.display.draw.quit()` followed by the
+  next restart pass re-initialising the renderer, which was the most uncertain of the six
+  going in and turned out to be safe.
+- **They do not fix the memory-growth failure** (below), and by the letter of "only add
+  what a measured failure justifies" they have no such justification — they are kept
+  anyway because they are Ren'Py's own documented teardown and have now been measured
+  safe. The iOS port must **re-measure these six on-device rather than inherit this
+  result in either direction**: RSS on Windows does not see driver-side GL allocations,
+  and iOS runs a categorically different graphics stack (MetalANGLE over Metal, not
+  Windows OpenGL) — a null effect here is not evidence they are safe to drop on iOS, and
+  it would not have been evidence to keep them had the effect been positive here either.
+
+**Measured clean, requiring no purge at all:** save-directory isolation (§6), store
+variables, and per-game init-time declarations (`config.name`, verified both directions,
+every launch — see §10.1). **Mutable style state remains untested, not clean** — three
+canary attempts at it across this milestone failed as instruments before ever producing
+a trustworthy result either way (§10.1) — and must not be assumed safe by the iOS plan.
+
+**Memory: the important negative result.** Neither hook reduces the engine's per-switch
+memory growth. RSS grows roughly linearly at **~22 MB per switch**, with no sign of a
+plateau, confirmed over two independent 100-cycle runs on the desktop harness — one with
+only the post-reload hook active (135.6 MB → 2,359.6 MB, ≈22.2 MB/switch), one with the
+pre-restart teardown added (136.1 MB → 2,352.2 MB, ≈21.9 MB/switch). The growth rate is
+unchanged between the two runs, which rules out "wrong hook" as the explanation: the leak
+is native, inside Ren'Py's own C/GL/SDL layer, and is not reachable from either hook
+point available to this shell layer. Fixing it would require modifying `renpy/`, which
+this task was not permitted to do. From a ~200 MB baseline, this is on the order of
+**54 switches** before reaching a 1.4 GB Jetsam ceiling — using minimal synthetic
+sentinel games; real visual novels, with larger asset sets, would very likely reach it
+sooner. This is recorded here as a hard constraint the iOS design must accommodate,
+**not as a solved problem** — no mitigation is decided in this document (see §14); a
+per-session switch limit is one candidate, but choosing one is a product decision this
+milestone did not make.
+
+Memory policy for the image cache specifically, given non-Pro iPhones are killed by
+Jetsam around 1.4–1.8 GB and a 4K RGBA8 background is roughly 33 MB of texture — this is
+an iOS-only design decision, not something the desktop harness could measure (no
+MetalANGLE on desktop), and it addresses a different, narrower problem than the native
+per-switch leak measured above:
 
 - `config.image_cache_size_mb` capped at 128 (the desktop default is far higher)
 - Swift subscribes to `didReceiveMemoryWarningNotification` and posts `clearImageCache`
 - the A→B transition is the peak, since MetalANGLE does not always release `MTLTexture`
   promptly on GLES delete; purge runs before the next game loads, not after
+- this mitigates image-cache-driven growth specifically; it does **not** address the
+  ~22 MB/switch native leak above, which is orthogonal and currently unmitigated
 
 ## 9. Native UI
 
@@ -324,19 +439,44 @@ Runs headless on the iOS Simulator (`sim-arm64`, matching the Apple Silicon `mac
 runners) via `xcodebuild test`. The `renios` prebuilts include simulator libraries, so
 this needs neither a Mac nor a device.
 
+Note for whoever builds this: the desktop version of this harness (`docs/BUILD.md`) had
+to run against a separate, full-stdlib interpreter rather than the Ren'Py SDK's own
+bundled one, because the SDK ships a stripped, `.pyc`-only standard library with no
+`unittest` module. The `renios` build is likely to have the same property; plan the iOS
+harness's Python-side assertions (if any run inside the embedded interpreter rather than
+purely as XCTest/Swift checks) accordingly.
+
 Two sentinel games, cycled 50–100 times:
 
-- **Game A** ships `sentinel.py` with `VALUE = "A"`, overrides `style.default.font`,
-  loads a large image, plays audio, writes a save, sets a store variable.
-- **Game B** ships its own `sentinel.py` with `VALUE = "B"` and asserts: it reads `"B"`;
-  `style.default.font` is the default; its save directory is its own; Game A's store
+- **Game A** ships `sentinel.py` with `VALUE = "A"`, declares `config.name = "Sentinel A"`
+  in its own init-time declarations, loads a large image, plays audio, writes a save,
+  sets a store variable.
+- **Game B** ships its own `sentinel.py` with `VALUE = "B"` and its own
+  `config.name = "Sentinel B"`, and asserts: it reads `"B"`; `config.name` reads
+  `"Sentinel B"`, never `"Sentinel A"`; its save directory is its own; Game A's store
   variable is absent.
+
+`config.name` was chosen after two earlier canaries built around `style.default.font`
+and `style.default.size` both turned out to be broken instruments rather than clean
+results — the font canary matched Ren'Py's own engine-wide default
+(`00style.rpy:139`) and so could not discriminate contamination from a clean reset, and
+the size canary's own marker was never read back because mutating a style outside an
+`init` block requires an explicit `style.rebuild()` that the fixture never called.
+`config.name` tests per-game **init-time declarations** — a value re-evaluated as part
+of each game's own init phase on restart — and it produced the first trustworthy
+pass-or-fail result of the three attempts. It is **not** the same claim as "styles don't
+bleed": mutable style objects (`style.default` and similar) are a different surface, one
+this harness has not yet exercised successfully, and the iOS plan should treat that
+surface as untested rather than clean.
 
 The run fails on module contamination, wrong save directory, crash, or monotonic RSS
 growth beyond a threshold across cycles.
 
 This test is what validates §8. The purge list is derived from its failures, not from
-speculation.
+speculation. On the desktop harness, the module-contamination and save-isolation halves
+of this test now pass cleanly (200 launches, zero failures); the RSS-growth half does
+not, and is not expected to pass without either an iOS-specific mitigation or a relaxed
+threshold that reflects the accepted switch limit — see §8 and §14.
 
 ### 10.2 Extractor unit tests
 
@@ -400,8 +540,14 @@ the App Store; it does not affect sideloaded v1.
 - **M0 — Pipeline spike.** Bare Xcode app plus renios libraries plus one hardcoded
   bundled game, built by CI into an unsigned `.ipa`, installed via Sideloadly, running on
   the device. Nothing else. Falsifies the riskiest infrastructure assumption first.
-- **M1 — Cycling harness.** The §10.1 test, red, then the purge layer built until green.
-  Validates the core architecture before any UI exists.
+- **M1 — Cycling harness.** The §10.1 test, red, then the purge layer built to close
+  every failure it can close. On the desktop harness (`docs/BUILD.md`) this fully closed
+  the module-contamination and save-isolation failures (zero failures over 200 switches)
+  but did **not** close the memory-growth failure, which was traced to a native leak
+  outside the reach of either purge hook (§8). M1 on iOS should expect the same split
+  result — treat contamination as fixable to green, and treat memory growth as a
+  constraint to design around (§14), not a bug this layer can fix. Validates the core
+  architecture before any UI exists.
 - **M2 — Library and import.** Extractor with its unit tests, storage layout, SwiftUI
   library, launch a chosen game.
 - **M3 — Overlay.** Bridge mailbox, overlay window, controls, magnifier, quit-to-library.
@@ -412,10 +558,11 @@ the App Store; it does not affect sideloaded v1.
 | Risk | Mitigation |
 |---|---|
 | CI cannot build the renios Xcode project unattended | M0 exists to find this out first, before anything is built on top of it |
-| `reload_all()` cannot cleanly reset between different games | M1 measures it directly; if it proves unfixable, the fallback is one game per app launch with a native restart prompt — degraded, not fatal |
-| MetalANGLE texture retention causes Jetsam kills on switching | Purge before load, cap image cache, memory-warning hook; the harness measures RSS across cycles |
+| `reload_all()`-based switching leaves stale Python-level state between games | **Resolved on desktop**, not just mitigated: scoping the `sys.modules`/`sys.path` purge to `<basedir>/game` (§8) eliminates it, verified over 100 consecutive switches with zero contamination across two independent 100-cycle runs, engine exit 0 every time. The earlier fallback of "one game per app launch" is **not needed** and is removed. One caveat carried forward: mutable style state (`style.default` and similar) was never successfully exercised as a contamination surface and remains untested, not confirmed clean (§8, §10.1) |
+| Native per-switch memory growth causes Jetsam kills on switching | **Not resolved.** Measured on the desktop harness at ~22 MB/switch, linear, no plateau, across two independent 100-cycle runs and both available teardown hook points (§8) — moving teardown to the theoretically-correct pre-restart hook did not change the rate. The leak is native (inside Ren'Py's own C/GL/SDL layer) and unreachable from the shell layer at either hook point available to it; fixing it would require modifying `renpy/`, which is out of scope. From a ~200 MB baseline this is on the order of 54 switches before a 1.4 GB Jetsam ceiling, using minimal synthetic games — real visual novels would likely reach it sooner. The app cannot currently switch games freely for an unbounded session; some form of switch limit or other mitigation is needed, but which one is a product decision not made in this document. The harness must be re-run on-device before trusting this number either way, since MetalANGLE/Metal is a categorically different graphics stack from the Windows/OpenGL driver this was measured against |
 | Debugging without a Mac | Harness runs in CI; a macOS VM or short cloud-Mac rental is available as an escalation, never a dependency |
 | Case-sensitivity differences between simulator and device filesystems | Unverified. iOS device APFS is case-insensitive by default, so this is likely a non-issue; the harness will reveal it if not. Not designed around pre-emptively |
+| iOS/`renios` bundled CPython version assumed identical to the desktop SDK's (3.12.7) | Unverified (§4). Confirmed only for the desktop SDK inspected in `docs/BUILD.md`; must be checked against the actual `renios` build rather than assumed |
 
 Open question: **the product name.** `VNPlayer` is a placeholder used throughout this
 document and in module prefixes; it needs replacing before M2, since bundle identifiers
