@@ -53,7 +53,7 @@ struct SpikeOverlayView: View {
                     .cornerRadius(8)
 
                     Text("posted: \(posted)")
-                        .font(.caption2)
+                        .font(.caption)
                         .foregroundColor(.white)
                 }
                 .padding(12)
