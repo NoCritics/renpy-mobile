@@ -728,6 +728,8 @@ if __name__ == "__main__":
 
 ```python
 # tests/test_mailbox.py
+import contextlib
+import io
 import os
 import sys
 import unittest
@@ -745,6 +747,11 @@ class FakeTransport:
         return self.batches.pop(0) if self.batches else []
 
 
+class Exploding:
+    def receive(self):
+        raise OSError("device on fire")
+
+
 class MailboxTests(unittest.TestCase):
     def test_converts_dicts_to_commands(self):
         mb = Mailbox(FakeTransport([[{"name": "launch", "args": {"basedir": "/x"}}]]))
@@ -760,12 +767,37 @@ class MailboxTests(unittest.TestCase):
         self.assertEqual([c.name for c in mb.poll()], ["quitToLibrary"])
 
     def test_transport_failure_is_swallowed(self):
-        class Exploding:
-            def receive(self):
-                raise OSError("device on fire")
-
         # A broken transport must never take down a running game.
-        self.assertEqual(Mailbox(Exploding()).poll(), [])
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(Mailbox(Exploding()).poll(), [])
+
+    def test_transport_failure_is_reported_once(self):
+        # Silence would present a dead command channel as "the buttons do nothing",
+        # but poll() runs every frame — so the fault is reported once, not 60x/sec.
+        mb = Mailbox(Exploding())
+        out = io.StringIO()
+
+        with contextlib.redirect_stdout(out):
+            mb.poll()
+            mb.poll()
+            mb.poll()
+
+        lines = [l for l in out.getvalue().splitlines() if l.strip()]
+        self.assertEqual(len(lines), 1)
+        self.assertIn("device on fire", lines[0])
+
+    def test_non_dict_entry_does_not_raise(self):
+        # Transport.receive()'s return type is a hint, not a guarantee: the iOS
+        # bridge deserializes data we do not control. One bad entry must not raise,
+        # and must not discard the good entries beside it.
+        mb = Mailbox(FakeTransport([["not a dict", None, {"name": "quitToLibrary"}]]))
+        out = io.StringIO()
+
+        with contextlib.redirect_stdout(out):
+            got = mb.poll()
+
+        self.assertEqual([c.name for c in got], ["quitToLibrary"])
+        self.assertIn("non-dict", out.getvalue())
 
 
 if __name__ == "__main__":
@@ -873,28 +905,75 @@ class Command:
 class Mailbox:
     def __init__(self, transport: Transport) -> None:
         self.transport = transport
+        self._last_report: str | None = None
 
     def poll(self) -> list[Command]:
-        """Return pending commands. Never raises — a broken transport must not
-        take down a running game."""
+        """Return pending commands.
+
+        Never raises. A broken transport must not take down a running game — a user
+        mid-novel should not lose their session because a command channel failed.
+
+        The guarantee covers *processing* as well as receiving. `Transport.receive()`
+        is a static type hint with no runtime enforcement, so a transport that
+        conforms in name can still hand back a list containing a non-dict — and the
+        iOS bridge this module exists to prepare for deserializes data we do not
+        control. Each entry is therefore converted defensively and in isolation, so
+        one bad entry cannot discard the good ones beside it.
+        """
 
         try:
             raw = self.transport.receive()
-        except Exception:
+        except Exception as exc:
+            self._report(f"transport.receive() failed: {exc!r}")
             return []
 
         commands: list[Command] = []
 
         for entry in raw:
-            name = entry.get("name")
-            if not name:
+            try:
+                command = self._to_command(entry)
+            except Exception as exc:
+                self._report(f"could not convert entry {entry!r}: {exc!r}")
                 continue
-            args = entry.get("args") or {}
-            if not isinstance(args, dict):
-                args = {}
-            commands.append(Command(name=str(name), args=args))
+
+            if command is not None:
+                commands.append(command)
 
         return commands
+
+    def _to_command(self, entry: object) -> Command | None:
+        """Convert one raw entry, or return None if it is not a usable command."""
+
+        if not isinstance(entry, dict):
+            self._report(f"ignoring non-dict entry {entry!r}")
+            return None
+
+        name = entry.get("name")
+        if not name:
+            return None
+
+        args = entry.get("args") or {}
+        if not isinstance(args, dict):
+            args = {}
+
+        return Command(name=str(name), args=args)
+
+    def _report(self, message: str) -> None:
+        """Record a fault once.
+
+        Silence is the dangerous failure here: a permanently broken command channel
+        would otherwise present as "the buttons do nothing" with no trail at all. But
+        poll() runs every frame, so an unconditional print would emit sixty lines a
+        second for as long as the fault lasts. Consecutive identical messages are
+        therefore reported once. On iOS, stdout is already routed to the system log by
+        Ren'Py's iossupport module.
+        """
+
+        if message == self._last_report:
+            return
+
+        self._last_report = message
+        print(f"[vnshell] mailbox: {message}")
 
 
 MAILBOX = Mailbox(NullTransport())
@@ -906,7 +985,7 @@ Run:
 ```bash
 bash scripts/run_tests.sh
 ```
-Expected: all tests PASS (3 path + 4 transport + 4 mailbox = 11).
+Expected: all tests PASS (3 path + 4 transport + 6 mailbox = 13).
 
 - [ ] **Step 6: Commit**
 
