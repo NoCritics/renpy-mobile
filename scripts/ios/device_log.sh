@@ -103,10 +103,10 @@ summarize_capture() {
 
     echo
     echo "=== Ren'Py's own output (NSLog via renios prototype/Log.m) ==="
-    echo "NOTE: if these read <decode: missing data>, the lines ARE Ren'Py's log but the"
-    echo "      default relay is not delivering the string payload. Re-capture with"
-    echo "      --legacy to read them as plain text. <private> instead means the device"
-    echo "      is redacting, which the %{public}s patch in enable_public_log.sh fixes."
+    echo "NOTE: <decode: missing data> here is expected -- this relay does not deliver"
+    echo "      the payload for a third-party binary's own entries. The readable copy is"
+    echo "      in the plain-text section above. <private> would mean something else:"
+    echo "      the device redacting, which enable_public_log.sh's %{public}s patch fixes."
     grep -m 20 -E "^[A-Za-z]{3} +[0-9]+ [0-9:.]+ VNPlayer\[[0-9]+\]" "$out" || echo "(none)"
 
     echo
@@ -121,32 +121,62 @@ summarize_capture() {
 
 mkdir -p "$LOGS"
 OUT="$LOGS/device.log"
+OUT_LEGACY="$LOGS/device-legacy.log"
 
-# The tool is a Windows binary, so under WSL it needs the Windows spelling of the output
-# path. Everywhere else the path we already have is the one it wants.
-if [ "$IS_WSL" -eq 1 ] && command -v wslpath >/dev/null 2>&1; then
-    OUT_ARG="$(wslpath -w "$OUT")"
-else
-    OUT_ARG="$OUT"
-fi
+# The tool is a Windows binary, so under WSL it needs the Windows spelling of any path we
+# hand it. Everywhere else the path we already have is the one it wants.
+win_path() {
+    if [ "$IS_WSL" -eq 1 ] && command -v wslpath >/dev/null 2>&1; then
+        wslpath -w "$1"
+    else
+        printf '%s' "$1"
+    fi
+}
 
 echo "Writing to $OUT"
-echo "Relay: $RELAY_NAME"
-echo "Launch VNPlayer on the phone now; its output appears here."
+echo "        and $OUT_LEGACY"
+echo "Launch VNPlayer on the phone now."
 
-if [ -n "$SECONDS_TO_CAPTURE" ]; then
-    echo "Capturing for ${SECONDS_TO_CAPTURE}s..."
-    # idevicesyslog exits non-zero when timeout kills it; that is the normal path here.
-    timeout "$SECONDS_TO_CAPTURE" "$SYSLOG" --no-colors $RELAY_ARGS -o "$OUT_ARG" || true
+if [ -z "$SECONDS_TO_CAPTURE" ]; then
+    echo "Streaming via $RELAY_NAME until Ctrl-C..."
+    "$SYSLOG" --no-colors $RELAY_ARGS -o "$(win_path "$OUT")"
+    exit 0
+fi
 
-    if [ ! -s "$OUT" ]; then
-        echo "Capture produced nothing. The relay may not have connected." >&2
-        exit 1
-    fi
+# Capture through BOTH relay services at once, from a single app launch.
+#
+# They answer different questions and neither subsumes the other: os_trace_relay carries
+# subsystem tags, sub-second timestamps and iOS-level events (jetsam kills, launch
+# failures) but renders a third-party binary's own os_log entries as "<decode: missing
+# data>"; syslog_relay carries this app's actual text but loses the structure. Asking the
+# person holding the phone to launch the app twice, once per relay, is a worse answer than
+# opening two connections.
+echo "Capturing for ${SECONDS_TO_CAPTURE}s via both relays..."
 
-    echo "Captured $(wc -l < "$OUT") lines."
-    summarize_capture "$OUT"
+timeout "$SECONDS_TO_CAPTURE" "$SYSLOG" --no-colors -o "$(win_path "$OUT")" >/dev/null 2>&1 &
+PID_DEFAULT=$!
+timeout "$SECONDS_TO_CAPTURE" "$SYSLOG" --no-colors --syslog-relay -o "$(win_path "$OUT_LEGACY")" >/dev/null 2>&1 &
+PID_LEGACY=$!
+
+wait "$PID_DEFAULT" 2>/dev/null || true
+wait "$PID_LEGACY" 2>/dev/null || true
+
+if [ ! -s "$OUT" ] && [ ! -s "$OUT_LEGACY" ]; then
+    echo "Both captures produced nothing. The relay may not have connected." >&2
+    exit 1
+fi
+
+echo "Captured $(wc -l < "$OUT" 2>/dev/null || echo 0) lines (structured)"
+echo "     and $(wc -l < "$OUT_LEGACY" 2>/dev/null || echo 0) lines (plain text)"
+
+echo
+echo "=== Ren'Py's own output, as plain text (legacy relay) ==="
+if [ -s "$OUT_LEGACY" ]; then
+    grep -m 40 -E "VNPlayer\[[0-9]+\]" "$OUT_LEGACY" || echo "(no lines from our process)"
 else
-    echo "Streaming until Ctrl-C..."
-    "$SYSLOG" --no-colors $RELAY_ARGS -o "$OUT_ARG"
+    echo "(legacy capture empty)"
+fi
+
+if [ -s "$OUT" ]; then
+    summarize_capture "$OUT"
 fi
