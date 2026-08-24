@@ -123,49 +123,50 @@ a row would have been wrong without one.
 Branch `spike/swift-bridge`, pushed. Last build: run 32789146023 (commit `b2f0a98`). `main` is untouched at
 the Milestone B merge; nothing here has been merged.
 
-## Round 2 RESULT: the overlay installs and renders nothing
+## ANSWERED: the spike's central question is YES
 
-Device run, 2026-08-25 01:39, commit `b2f0a98`:
+Device run, 2026-08-25 01:53, iPhone 13 Pro Max / iOS 26.6, commit `1a0f0ea` (run
+32790844380). Both the control and the subject rendered, and the round trip closed:
 
-```
-Aug 25 01:39:06.184947 VNPlayer[1508] <Notice>: [vnspike] bootstrap registered
-Aug 25 01:39:06.908692 VNPlayer[1508] <Notice>: [vnspike] overlay installed
-```
+- The **pure-UIKit green box** rendered -> a second `UIWindow` at `.normal + 1` composites
+  over SDL's window.
+- The **SwiftUI red panel** rendered inside it -> `UIHostingController` hosts SwiftUI in
+  that window.
+- Tapping **SEND TO PYTHON** moved `posted: 0` -> `posted: 1` -> touches reach SwiftUI
+  controls in the overlay window.
+- Ren'Py's own screen moved `from Swift: 0 received` -> `from Swift: 1 received` -> the
+  JSON line Swift appended to `Documents/vnplayer-commands.jsonl` was drained by
+  `vnshell.transports.FileTransport` in the periodic callback, and the engine restarted
+  its interaction to redraw.
+- `alive for 2s` -> `alive for 8s` across the two observations -> the engine kept running
+  the whole time. The overlay did not freeze or displace it.
 
-`overlay installed` is return code 1: main thread, a `UIWindowScene` found, a window
-created with a non-empty frame, attached at `.normal + 1`, `isHidden = false`. No red
-panel on screen. Placement was not the problem, so the clipping hypothesis is dead --
-though the Ren'Py text really is clipped at the top, which is a separate defect and still
-unexplained.
+**Every question this spike existed to answer is now answered.** M2 can be specced against
+a demonstrated mechanism rather than a hoped-for one.
 
-**Cause, identified in the source rather than on the device:** `PassthroughHostingController`
-overrode `loadView()` and assigned a plain `UIView`. `UIHostingController`'s view is not an
-ordinary `UIView` -- it is the hosting view that renders the SwiftUI tree, and `loadView`
-is where it gets created. Overriding it away leaves a correctly-installed,
-correctly-positioned, entirely empty window. Every symptom follows: rc=1, non-empty frame,
-nothing drawn.
+### The mechanism, stated for the spec
 
-That is the same failure shape as the `*.m` glob in `build_spike.sh`: a construct that
-reads as though it should work, produces no error, and silently does nothing.
+1. A second `UIWindow` on the active `UIWindowScene`, `windowLevel = .normal + 1`,
+   `backgroundColor = .clear`, `isOpaque = false`, shown with `isHidden = false` and
+   **not** `makeKeyAndVisible` -- SDL keeps key status and keeps its input.
+2. The window is a `UIWindow` subclass overriding `hitTest` to return `nil` for hits that
+   land on the root view itself, so empty space falls through.
+3. `UIHostingController` used **unmodified**, added as a child view controller. Never
+   override its `loadView`.
+4. Installed from an ObjC `+load` that registers for
+   `UIApplicationDidBecomeActiveNotification`, calling a Swift `@_cdecl` function.
+   Python is not involved in installation and cannot be -- see the ctypes row below.
+5. Swift -> Python is a newline-delimited JSON file in `Documents`, drained by Milestone
+   A's existing `FileTransport` from `config.periodic_callbacks`.
 
-**Fix (commit below):** passthrough moved to a `PassthroughWindow: UIWindow` subclass
-overriding `hitTest`, which is where it belonged. `UIHostingController` is now used
-unmodified, added as a child view controller.
+### Still unverified, deliberately
 
-### Round 3 carries a control, and the screen alone reads it
-
-The window now also hosts a **pure-UIKit green box labelled UIKIT**, added as a plain
-`UIView` with no SwiftUI involved, left of centre so it cannot hide behind the red panel.
-Without it, "nothing on screen" again cannot separate two very different failures.
-
-| On screen | Meaning | Next move |
-|---|---|---|
-| green **and** red | Window composites over SDL and SwiftUI hosts inside it. The spike's central question is answered YES. | Tap the button; confirm `from Swift: N received` climbs. |
-| green **only** | The window composites fine; SwiftUI hosting is the remaining problem. | Investigate the hosting controller; UIKit is a viable fallback for the whole overlay. |
-| **neither** | The window is not reaching the screen at all. Layering, not content. | Raise `windowLevel` to `.alert + 1`; then `makeKeyAndVisible`; then host inside SDL's own view controller. |
-
-Note the third row is now reachable as a *conclusion* rather than a guess, which it was
-not in round 2.
+**Whether Ren'Py still receives touches outside the panel.** The passthrough `hitTest` is
+written and the engine is demonstrably alive, but this build cannot prove input reaches
+it: the shell project sits in `renpy.pause(3600.0, hard=True)`, which ignores clicks by
+design. Proving it needs a Ren'Py screen with a tappable element. **Do not record
+passthrough as demonstrated until that test exists** -- it is currently reasoning, not
+measurement.
 
 ## iOS 13.0 is the API floor
 
@@ -198,8 +199,8 @@ Instrument accordingly: distinct literal strings per case, never formatted value
 | Can we build a C extension module instead? | **NO** — no `Python.h` and no `pyconfig.h` for the prebuilt `libpython3.12.a` |
 | Can Python drive a file mailbox? | **YES** — `mailbox control: OK (wrote 1, read 1)` on device, via Milestone A's own `FileTransport` |
 | Does the ObjC `+load` bootstrap run? | **YES** — `[vnspike] bootstrap registered` |
-| Does the SwiftUI overlay appear over SDL? | **UNKNOWN** — button not visible, but so is some Ren'Py text; see step 1 |
-| Does a Swift-written command reach Python? | **UNTESTED** — blocked on the button being tappable |
+| Does the SwiftUI overlay appear over SDL? | **YES** — device-confirmed 2026-08-25, with a pure-UIKit control alongside |
+| Does a Swift-written command reach Python? | **YES** — `posted: 1` in Swift, `from Swift: 1 received` in Ren'Py |
 
 ## The methodological thread
 
