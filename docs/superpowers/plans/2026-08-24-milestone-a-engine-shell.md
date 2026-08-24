@@ -198,7 +198,12 @@ if [ "$ACTUAL" != "$SDK_SHA256" ]; then
 fi
 
 echo "Unpacking..."
-unzip -q "$ZIP" -d "$VENDOR"
+# Clear any partially-extracted tree from an interrupted run. Without this, unzip
+# finds existing files, prompts to overwrite, reads EOF on non-interactive stdin,
+# treats that as "none", and exits 1 — which `set -e` turns into a silent abort
+# before the diagnostic below can fire. -o additionally guarantees no prompt.
+rm -rf "$SDK_DIR"
+unzip -qo "$ZIP" -d "$VENDOR"
 
 if [ ! -f "$SDK_DIR/renpy/bootstrap.py" ]; then
     echo "Unpack did not produce $SDK_DIR/renpy/bootstrap.py" >&2
