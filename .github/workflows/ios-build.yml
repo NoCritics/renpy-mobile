@@ -39,8 +39,14 @@ jobs:
           find "$RENIOS" -maxdepth 2 -type d | sort
           echo "=== xcode projects ==="
           find "$RENIOS" -name "*.xcodeproj" -maxdepth 3
-          echo "=== prebuilt libraries ==="
-          find "$RENIOS" -name "*.a" | head -50
+          echo "=== prebuilt libraries: release (full, sorted) ==="
+          find "$RENIOS/prototype/prebuilt/release" -name "*.a" | sort
+          echo "=== prebuilt libraries: release count ==="
+          find "$RENIOS/prototype/prebuilt/release" -name "*.a" | wc -l
+          echo "=== prebuilt libraries: debug (full, sorted) ==="
+          find "$RENIOS/prototype/prebuilt/debug" -name "*.a" | sort
+          echo "=== prebuilt libraries: debug count ==="
+          find "$RENIOS/prototype/prebuilt/debug" -name "*.a" | wc -l
           echo "=== library count and total size ==="
           find "$RENIOS" -name "*.a" | wc -l
           du -sh "$RENIOS"
