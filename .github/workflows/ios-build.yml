@@ -28,17 +28,9 @@ jobs:
       - name: Fetch dependencies
         run: bash scripts/ios/fetch_ios_deps.sh
 
-      - name: Debug - raw vendor layout (temporary, discovery only)
-        if: always()
-        run: |
-          echo "=== vendor/ top level ==="
-          ls -la vendor || true
-          echo "=== vendor/ depth 3 ==="
-          find vendor -maxdepth 3 | sort || true
-
       - name: Inventory renios
         run: |
-          RENIOS=vendor/renpy-8.5.3-renios
+          RENIOS=vendor/renios
           echo "=== top level ==="
           ls -la "$RENIOS"
           echo "=== depth 2 ==="
@@ -63,6 +55,6 @@ jobs:
         with:
           name: renios-inventory
           path: |
-            vendor/renpy-8.5.3-renios/**/Info.plist
-            vendor/renpy-8.5.3-renios/**/*.pbxproj
+            vendor/renios/**/Info.plist
+            vendor/renios/**/*.pbxproj
           if-no-files-found: warn

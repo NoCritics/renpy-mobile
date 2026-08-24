@@ -21,9 +21,11 @@ sha256_of() {
 }
 
 fetch() {
-    local name="$1" expected="$2" marker="$3"
+    # $4 (dirname) overrides the extracted directory name when the zip does
+    # not unpack to "renpy-$RENPY_VERSION-$name" — renios does not.
+    local name="$1" expected="$2" marker="$3" dirname="${4:-renpy-$RENPY_VERSION-$name}"
     local zip="$VENDOR/renpy-$RENPY_VERSION-$name.zip"
-    local dir="$VENDOR/renpy-$RENPY_VERSION-$name"
+    local dir="$VENDOR/$dirname"
 
     if [ -e "$dir/$marker" ]; then
         echo "$name already present at $dir"
@@ -58,6 +60,9 @@ fetch() {
 }
 
 fetch sdk    "$SDK_SHA256"    "renpy/bootstrap.py"
-fetch renios "$RENIOS_SHA256" "buildlib"
+# renios's zip is named renpy-8.5.3-renios.zip but unpacks to vendor/renios,
+# not vendor/renpy-8.5.3-renios. Confirmed from a CI run's raw directory
+# listing (docs/IOS-BUILD.md) after the naive assumption failed.
+fetch renios "$RENIOS_SHA256" "buildlib" "renios"
 
 echo "iOS dependencies ready under $VENDOR"
