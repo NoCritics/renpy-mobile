@@ -277,6 +277,23 @@ FAIL: memory grew from 185.3 MB to 261.2 MB over 5 cycles — leak
 
 `sys.modules` contamination: gone. Only the pre-existing memory-growth failure remained.
 
+**A second real bug, same shape, found in Task 8 code review after the above was
+written.** The `sys.modules` filter correctly uses a directory-boundary guard
+(`resolved.startswith(root + os.sep)` — a trailing separator, so `.../game_assets`
+cannot match a `root` of `.../game`), but the `sys.path` filter a few lines below it
+used a bare `os.path.abspath(p).startswith(root)`, with no such guard. With
+`root = <previous_basedir>/game`, a sibling directory like `<previous_basedir>/gamelib`
+or `<previous_basedir>/game_assets` prefix-matches the string `"…/game"` and would have
+been wrongly stripped from `sys.path` on every switch, even though it is not under
+`game/` at all. Invisible to the harness because neither sentinel game ships such a
+sibling — a latent bug, not a theoretical one, since real games commonly do. Fixed by
+giving the `sys.path` filter the identical `_under_root` boundary check the module
+filter already had (`resolved == root or resolved.startswith(root + os.sep)`). No
+harness-observable behavior changed for the sentinel games (confirmed by rerunning
+`bash scripts/run_harness.sh 4`: same "purged 1 modules: sentinel" outcome, same
+memory-only failure) — this fix protects a case this harness cannot exercise, which is
+exactly why review caught it and the harness did not.
+
 ### Tried and found unnecessary (post-reload hook): five candidates for the memory-growth failure
 
 Each was added alone to `purge_engine_state`, run through `bash scripts/run_harness.sh
@@ -541,6 +558,23 @@ the leak. Two possibilities remain, neither resolvable from this shell layer:
 
 Both are native/engine-internal, not Python-cache leaks reachable from `vnshell.purge`,
 regardless of which of the two hook points is used.
+
+**Ruling on `teardown_live_engine()`'s six steps, from Task 8 review:** by the letter of
+this task's own method — every purge step must be justified by a failure it measurably
+fixes — these six steps have no such justification; they run every switch and
+demonstrably do not move RSS. They are being kept anyway, and the reasoning is recorded
+here rather than only in the code, because it changes what the iOS plan should do with
+this section: what was actually measured is narrower than "these steps do nothing." It
+is that they do not reduce **resident set size on Windows with an NVIDIA GL driver**.
+RSS does not see driver-side allocations, and iOS runs a categorically different
+graphics stack (MetalANGLE over Metal, not Windows OpenGL) — this measurement does not
+transfer. The six steps are also Ren'Py's own documented process-exit sequence
+(bootstrap.py:409-419) and have now been measured safe across 100 consecutive
+mid-session calls, `draw.quit()` included. **The iOS port must re-measure these six
+steps on-device rather than inherit this Windows result in either direction** — a null
+result on Windows is not evidence they are safe to drop on iOS, and it would not have
+been evidence to keep them if the result had been positive here either. Full reasoning
+also lives in `teardown_live_engine()`'s docstring in `shell/vnshell/purge.py`.
 
 ### Bottom line for Task 8
 

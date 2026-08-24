@@ -54,6 +54,23 @@ def teardown_live_engine() -> list[str]:
     Every step is independent and defensive, same contract as ``purge_engine_state``: a
     failure here degrades to a logged ``failed: ...`` entry, it never propagates and
     never blocks the restart.
+
+    Why these six steps are kept despite measuring no effect on RSS (docs/BUILD.md,
+    "Purge findings", second full harness run): they are **safe** — measured across 100
+    consecutive mid-session switches, including ``draw.quit()``, the step judged most
+    likely to crash the next restart pass, with zero failures — and they **mirror the
+    engine's own shutdown sequence** (the same calls bootstrap.py's ``finally`` makes at
+    process exit, bootstrap.py:409-419), just made per switch instead of once. What was
+    actually measured is narrower than "these steps do nothing": it is that they do not
+    reduce **resident set size on Windows with an NVIDIA GL driver**. RSS does not
+    capture driver-side allocations, and this measurement does not transfer to iOS,
+    which runs a completely different graphics stack (MetalANGLE over Metal, not
+    Windows OpenGL). Removing them on the strength of a Windows-only null result would
+    be discarding safe, engine-authored cleanup on an assumption, not a cross-platform
+    measurement. **The iOS port must re-measure these six steps on device** rather than
+    inherit this Windows finding in either direction — the null result here is not
+    evidence they are safe to skip there, any more than it would be evidence to keep
+    them if the *positive* result had shown up on Windows.
     """
 
     actions: list[str] = []
@@ -126,15 +143,15 @@ def _quit_audio() -> None:
 def purge_engine_state(previous_basedir: str | None) -> list[str]:
     actions: list[str] = []
 
-    for step in (
-        lambda: _purge_modules(previous_basedir),
+    for label, step in (
+        ("_purge_modules", lambda: _purge_modules(previous_basedir)),
     ):
         try:
             result = step()
             if result:
                 actions.append(result)
         except Exception as exc:  # noqa: BLE001 — cleanup must never propagate
-            actions.append(f"failed: {step.__name__ if hasattr(step, '__name__') else step}: {exc!r}")
+            actions.append(f"failed: {label}: {exc!r}")
 
     return actions
 
@@ -184,6 +201,16 @@ def _purge_modules(previous_basedir: str | None) -> str:
     # The game directory is pushed onto sys.path by the game itself and by
     # bootstrap; leaving stale entries there would let the next game import from
     # a directory that no longer holds the modules it expects.
-    sys.path[:] = [p for p in sys.path if not os.path.abspath(p).startswith(root)]
+    #
+    # Mirror the module filter's directory-boundary guard exactly. A bare
+    # startswith(root) would also strip a sibling like <basedir>/game_assets or
+    # <basedir>/gamelib — neither is under game/, but both prefix-match the string
+    # "…/game". Invisible with the sentinel games (neither ships such a sibling), but
+    # real games do, so this was a latent bug, not a theoretical one.
+    def _under_root(path: str) -> bool:
+        resolved = os.path.abspath(path)
+        return resolved == root or resolved.startswith(root + os.sep)
+
+    sys.path[:] = [p for p in sys.path if not _under_root(p)]
 
     return f"purged {len(removed)} modules: {', '.join(sorted(removed))}" if removed else ""
