@@ -65,6 +65,11 @@ def select_next_basedir(basedir: str, always: bool = False) -> str:
 def tick() -> None:
     """Drain the mailbox. Called every frame from config.periodic_callbacks."""
 
+    from vnshell import harness
+
+    if harness.enabled() and STATE.next_basedir is None:
+        harness.start()
+
     for command in mailbox_module.MAILBOX.poll():
         _dispatch(command)
 
