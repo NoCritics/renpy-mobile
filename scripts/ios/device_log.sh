@@ -10,33 +10,35 @@
 #   bash scripts/ios/device_log.sh            # stream until Ctrl-C
 #   bash scripts/ios/device_log.sh 30         # capture for 30 seconds, then stop
 #
-# Requires libimobiledevice for Windows and Apple's Mobile Device Support (ships with
-# iTunes). The phone must be unlocked and paired.
+# Works from Git Bash, WSL, or MSYS. Requires libimobiledevice for Windows and Apple's
+# Mobile Device Support (ships with iTunes). The phone must be unlocked and paired.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LOGS="$ROOT/logs"
 SECONDS_TO_CAPTURE="${1:-}"
 
-# Finding the tool is fiddlier than it looks, because "bash" on Windows can be Git Bash
-# (paths like /c/Users/... or C:/Users/...) or WSL (/mnt/c/Users/...), and the same
-# directory has a different spelling in each. Try every spelling rather than assuming
-# which bash the user happens to have first on PATH.
-SYSLOG=""
-IDEVICE_ID=""
+# Are we under WSL? A Windows .exe still runs here via interop, but any path we hand it
+# has to be a Windows path, because the .exe cannot read /mnt/c/... spellings.
+IS_WSL=0
+if [ -n "${WSL_DISTRO_NAME:-}" ] || grep -qi microsoft /proc/version 2>/dev/null; then
+    IS_WSL=1
+fi
 
-# Derive the Windows user directory from whichever variable this shell exposes.
-WINHOME_RAW="${USERPROFILE:-${HOME:-}}"
-WINHOME_TAIL="$(printf '%s' "$WINHOME_RAW" | tr '\\' '/' | sed 's|^[A-Za-z]:||')"
+# Finding the tool is fiddlier than it looks: "bash" on Windows may be Git Bash, MSYS or
+# WSL, and each spells the same directory differently (/c/..., C:/..., /mnt/c/...). Rather
+# than guess the spelling or the username — the Linux user inside WSL is unrelated to the
+# Windows one — derive it from $ROOT, which this shell has already spelled correctly.
+USER_DIR="$(printf '%s' "$ROOT" | sed -E 's|(.*/Users/[^/]+)/.*|\1|')"
 
 CANDIDATES=""
 [ -n "${VNPLAYER_IMOBILEDEVICE:-}" ] && CANDIDATES="$VNPLAYER_IMOBILEDEVICE"
-for prefix in "C:" "/c" "/mnt/c"; do
-    CANDIDATES="$CANDIDATES ${prefix}${WINHOME_TAIL}/tools/libimobiledevice"
-    CANDIDATES="$CANDIDATES ${prefix}/Users/$(whoami)/tools/libimobiledevice"
-done
+CANDIDATES="$CANDIDATES $ROOT/tools/libimobiledevice"
+[ "$USER_DIR" != "$ROOT" ] && CANDIDATES="$CANDIDATES $USER_DIR/tools/libimobiledevice"
 CANDIDATES="$CANDIDATES ${HOME:-}/tools/libimobiledevice"
 
+SYSLOG=""
+IDEVICE_ID=""
 for dir in $CANDIDATES; do
     if [ -x "$dir/idevicesyslog.exe" ]; then
         SYSLOG="$dir/idevicesyslog.exe"
@@ -55,8 +57,7 @@ if [ -z "$SYSLOG" ]; then
     for dir in $CANDIDATES; do echo "  $dir" >&2; done
     echo "  ...and on PATH" >&2
     echo >&2
-    echo "Set VNPLAYER_IMOBILEDEVICE to its directory if it lives elsewhere." >&2
-    echo "Note: this needs Git Bash, not WSL — WSL cannot reach the USB device." >&2
+    echo "Set VNPLAYER_IMOBILEDEVICE to its directory and re-run." >&2
     exit 1
 fi
 
@@ -64,11 +65,21 @@ fi
 if ! "$IDEVICE_ID" -l 2>/dev/null | grep -q .; then
     echo "No device detected." >&2
     echo "Check: cable connected, phone unlocked, and 'Trust This Computer' accepted." >&2
+    [ "$IS_WSL" -eq 1 ] && echo "Under WSL the Windows USB service is still used; if this" >&2
+    [ "$IS_WSL" -eq 1 ] && echo "persists, try the same command from Git Bash." >&2
     exit 1
 fi
 
 mkdir -p "$LOGS"
 OUT="$LOGS/device.log"
+
+# The tool is a Windows binary, so under WSL it needs the Windows spelling of the output
+# path. Everywhere else the path we already have is the one it wants.
+if [ "$IS_WSL" -eq 1 ] && command -v wslpath >/dev/null 2>&1; then
+    OUT_ARG="$(wslpath -w "$OUT")"
+else
+    OUT_ARG="$OUT"
+fi
 
 echo "Writing to $OUT"
 echo "Launch VNPlayer on the phone now; its output appears here."
@@ -76,12 +87,18 @@ echo "Launch VNPlayer on the phone now; its output appears here."
 if [ -n "$SECONDS_TO_CAPTURE" ]; then
     echo "Capturing for ${SECONDS_TO_CAPTURE}s..."
     # idevicesyslog exits non-zero when timeout kills it; that is the normal path here.
-    timeout "$SECONDS_TO_CAPTURE" "$SYSLOG" --no-colors -o "$OUT" || true
+    timeout "$SECONDS_TO_CAPTURE" "$SYSLOG" --no-colors -o "$OUT_ARG" || true
+
+    if [ ! -s "$OUT" ]; then
+        echo "Capture produced nothing. The relay may not have connected." >&2
+        exit 1
+    fi
+
     echo "Captured $(wc -l < "$OUT") lines."
     echo
     echo "=== lines mentioning VNPlayer, Ren'Py or Python ==="
     grep -iE "vnplayer|renpy|python|vnshell" "$OUT" | head -40 || echo "(none matched)"
 else
     echo "Streaming until Ctrl-C..."
-    "$SYSLOG" --no-colors -o "$OUT"
+    "$SYSLOG" --no-colors -o "$OUT_ARG"
 fi
