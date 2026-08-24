@@ -489,3 +489,183 @@ edits.
 - Contents of `base/lib/` and `base/renpy/` beyond their directory names — not opened,
   only their presence and the presence of `base/main.py` was verified, per the brief's
   Step 3 checklist.
+
+---
+
+# Task 3 — archive unsigned and package an `.ipa`
+
+`scripts/ios/package_ipa.sh` drives `xcodebuild archive` against the Task-2-generated
+`build/xcode/VNPlayer/VNPlayer.xcodeproj`, with `CODE_SIGN_IDENTITY=""`,
+`CODE_SIGNING_REQUIRED=NO`, `CODE_SIGNING_ALLOWED=NO` on the command line (no
+`-exportArchive`, no certificate, no repository secret — the plan's binding constraint).
+`PRODUCT_BUNDLE_IDENTIFIER=io.github.nocritics.vnplayer` is likewise passed on the command
+line to override Ren'Py's `com.domain.VNPlayer` placeholder, editing no file. The
+resulting `.xcarchive`'s `Products/Applications/VNPlayer.app` is copied into a `Payload/`
+directory and zipped by hand into `build/VNPlayer.ipa` — the whole of what an unsigned
+`.ipa` is. Wired into `ios-build.yml` as two new steps, "Package unsigned .ipa" and
+"Upload .ipa", after "Upload inventory"; `timeout-minutes` raised from 45 to 90.
+
+**The archive succeeded on the first CI attempt.** Nothing in this project had been
+through `xcodebuild` before this task.
+
+## CI run (evidence trail)
+
+Run: [32744985444](https://github.com/NoCritics/renpy-mobile/actions/runs/32744985444) —
+**GREEN**, all 11 steps, on branch `milestone-b`.
+
+| Step | Started | Completed | Duration |
+|---|---|---|---|
+| discover (whole job) | 15:27:41Z | 15:28:56Z | **75s** |
+| Package unsigned .ipa | 15:28:11Z | 15:28:50Z | **39s** |
+
+The 39s figure covers the full `xcodebuild archive` (linking 40 prebuilt `.a` files, one
+`.xcframework`, and four small `.c`/`.m` sources) plus the hand-packaging into `.ipa`. It
+is fast because none of Ren'Py's C/Objective-C sources are compiled from source here —
+`prebuilt/release/*.a` are prebuilt static libraries; `xcodebuild` only compiles
+`main.c`, `IAPHelper.m`, `Log.m`, `VideoPlayer.m` and links.
+
+`xcodebuild`'s own verdict, verbatim from the log:
+
+```
+** ARCHIVE SUCCEEDED **
+```
+
+(timestamp `2026-08-24T15:28:35.4251470Z`, ~24s into the step — the remaining ~15s is the
+`Payload/` copy, `zip`, and this script's own assertions/`unzip -l`.)
+
+## Correction-sheet §4 failure shapes: none of them hit
+
+- **Embedded-framework signing (MetalANGLE).** Not encountered. No `CodeSign` invocation
+  appears anywhere in the step's log (`grep -c "CodeSign " ` on the full raw log = 0).
+  `ProcessXCFramework`/`builtin-process-xcframework` and a plain `strip`/`bitcode_strip`
+  pair handled `MetalANGLE.xcframework` without ever attempting to sign it — consistent
+  with `CODE_SIGNING_ALLOWED=NO` actually taking effect.
+- **Architecture slices (armv7).** Not encountered, despite the on-disk slice directory
+  being misleadingly named `ios-arm64_armv7` (confirmed from the log itself):
+  ```
+  Copy .../InstallationBuildProductsLocation/Applications/VNPlayer.app/Frameworks/MetalANGLE.framework
+       .../build/xcode/VNPlayer/Frameworks/MetalANGLE.xcframework/ios-arm64_armv7/MetalANGLE.framework
+  ```
+  `-destination generic/platform=iOS` selected only the `arm64` binary slice from within
+  that directory; no armv7-related link or launch error occurred. The directory name is a
+  leftover label from when the slice held both architectures, not evidence the armv7 code
+  itself was linked.
+- **Inverted `LIBRARY_SEARCH_PATHS`.** Not encountered, and not applicable as predicted:
+  the log's link warnings reference `.../prebuilt/release/libavcodec.a`,
+  `libavutil.a`, `libswresample.a`, `libswscale.a` — i.e. the Release configuration
+  correctly searched `prebuilt/release/`, matching correction sheet §4's expectation that
+  building `-configuration Release` avoids the Debug configuration's inverted paths.
+- **Only non-fatal output:** nine `ld` warnings of the form `skipping debug map object
+  with duplicate name and timestamp: 1970-01-01 00:00:00.000000000
+  .../prebuilt/release/libX.a(obj.o)` — expected noise from linking prebuilt static
+  libraries whose object files share a zeroed mtime, not a build defect.
+
+## The `.ipa`: verified, not just produced
+
+**Size:** `27M` as reported by the CI job's own `ls -lh` (`-rw-r--r-- 1 runner staff 27M
+... build/VNPlayer.ipa`); independently re-measured by downloading the `VNPlayer-ipa`
+artifact from run 32744985444 to a local machine: **28,006,947 bytes** (≈26.7 MiB, matches
+the `27M`-rounded figure).
+
+**Internal structure**, from the CI step's own `unzip -l` (verbatim excerpt — GitHub
+Actions truncated the log's final summary/totals line for this very verbose step, so the
+count below is from an independent re-check, not this excerpt):
+
+```
+Archive:  /Users/runner/work/renpy-mobile/renpy-mobile/build/VNPlayer.ipa
+        0  08-24-2026 15:28   Payload/
+        0  08-24-2026 15:28   Payload/VNPlayer.app/
+    19577  08-24-2026 15:28   Payload/VNPlayer.app/AppIcon60x60@2x.png
+        0  08-24-2026 15:28   Payload/VNPlayer.app/Launch Screen.storyboardc/
+     2735  08-24-2026 15:28   Payload/VNPlayer.app/Launch Screen.storyboardc/01J-lp-oVM-view-Ze5-6b-2t3.nib
+      924  08-24-2026 15:28   Payload/VNPlayer.app/Launch Screen.storyboardc/UIViewController-01J-lp-oVM.nib
+      258  08-24-2026 15:28   Payload/VNPlayer.app/Launch Screen.storyboardc/Info.plist
+   205320  08-24-2026 15:28   Payload/VNPlayer.app/LaunchImage-foreground.png
+  1325199  08-24-2026 15:28   Payload/VNPlayer.app/Assets.car
+ 27201304  08-24-2026 15:28   Payload/VNPlayer.app/VNPlayer
+    29537  08-24-2026 15:28   Payload/VNPlayer.app/AppIcon76x76@2x~ipad.png
+     1911  08-24-2026 15:28   Payload/VNPlayer.app/LaunchImage-background.png
+        0  08-24-2026 15:28   Payload/VNPlayer.app/Frameworks/
+        0  08-24-2026 15:28   Payload/VNPlayer.app/Frameworks/MetalANGLE.framework/
+ 16014288  08-24-2026 15:28   Payload/VNPlayer.app/Frameworks/MetalANGLE.framework/MetalANGLE
+      704  08-24-2026 15:28   Payload/VNPlayer.app/Frameworks/MetalANGLE.framework/Info.plist
+     1252  08-24-2026 15:28   Payload/VNPlayer.app/Info.plist
+        0  08-24-2026 15:28   Payload/VNPlayer.app/base/
+        0  08-24-2026 15:28   Payload/VNPlayer.app/base/game/
+      266  08-24-2026 15:28   Payload/VNPlayer.app/base/game/options.rpy
+        9  08-24-2026 15:28   Payload/VNPlayer.app/base/game/script_version.txt
+      583  08-24-2026 15:28   Payload/VNPlayer.app/base/game/script.rpy
+        0  08-24-2026 15:28   Payload/VNPlayer.app/base/game/cache/
+    41119  08-24-2026 15:28   Payload/VNPlayer.app/base/game/cache/screens.rpyb
+       75  08-24-2026 15:28   Payload/VNPlayer.app/base/game/cache/build_info.json
+   447997  08-24-2026 15:28   Payload/VNPlayer.app/base/game/cache/bytecode-312.rpyb
+    16299  08-24-2026 15:28   Payload/VNPlayer.app/base/game/cache/py3analysis.rpyb
+     1282  08-24-2026 15:28   Payload/VNPlayer.app/base/game/script.rpyc
+     1424  08-24-2026 15:28   Payload/VNPlayer.app/base/game/options.rpyc
+        0  08-24-2026 15:28   Payload/VNPlayer.app/base/lib/
+        0  08-24-2026 15:28   Payload/VNPlayer.app/base/lib/python3.12/
+   ... (base/renpy/ and base/lib/python3.12/ contents: ~1300 more entries, Ren'Py's
+        own runtime and stdlib, elided here)
+```
+
+`base/game/options.rpy` and `base/game/script.rpy` are `shell-project/game/`'s own two
+files (confirmed byte-for-byte matching sizes to Task 2's `base/game/` inventory: 266 and
+583 bytes respectively) — direct evidence the packaged app contains our project, not a
+placeholder.
+
+**Independent re-verification** (not trusting the CI script's own assertions): the
+`VNPlayer-ipa` artifact was downloaded from run 32744985444 via `gh run download` and
+opened locally with `System.IO.Compression.ZipFile` (.NET), on a machine with no
+connection to the CI script that built it:
+
+- **1,424 total zip entries**, of which **1,423** are under `Payload/VNPlayer.app/` (the
+  remaining 1 is the bare `Payload/` directory entry itself).
+- `Payload/VNPlayer.app/VNPlayer` (the executable) present, **27,201,304 bytes** — exact
+  match to the CI log's `unzip -l` figure for the same file.
+- `Payload/VNPlayer.app/Info.plist` present and readable as a valid binary plist
+  (`bplist00` magic); its bytes contain the literal string
+  `io.github.nocritics.vnplayer`, `VNPlayer`, `13.0` (deployment target),
+  `arm64`, `iphoneos`/`18.5` (SDK) — confirming the same facts the CI script's own
+  `PlistBuddy` readback reported, via a completely independent code path (.NET zip
+  reading vs. the script's own `unzip`/`PlistBuddy`).
+
+## Bundle identifier: read back from the built app, not assumed
+
+The override was passed as `PRODUCT_BUNDLE_IDENTIFIER=io.github.nocritics.vnplayer` on
+the `xcodebuild` command line. Per the correction sheet, the value recorded here is what
+was read back **out of the built app's own `Info.plist`**, not the value passed in:
+
+```
+$ /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" \
+    build/VNPlayer.xcarchive/Products/Applications/VNPlayer.app/Info.plist
+io.github.nocritics.vnplayer
+```
+
+**Bundle identifier actually present in the built app: `io.github.nocritics.vnplayer`.**
+It matches the override exactly (the script's own guard, which would print a `WARNING` to
+stderr on any mismatch, did not fire). Independently reconfirmed above by reading the
+binary plist directly out of the downloaded `.ipa` on a separate machine, outside the CI
+script's own trust boundary.
+
+## Files changed (Task 3)
+
+- `scripts/ios/package_ipa.sh` (new) — the archive-and-package script.
+- `.github/workflows/ios-build.yml` — added "Package unsigned .ipa" and "Upload .ipa"
+  steps after "Upload inventory"; `timeout-minutes` raised from 45 to 90.
+- `docs/IOS-BUILD.md` — this section.
+
+## Not determined (Task 3)
+
+- Whether the resulting `.app`/`.ipa` actually launches and renders the visual novel on a
+  real device via Sideloadly — that requires a physical iOS device and a free Apple ID,
+  neither available in CI; out of scope for this task, which only proves the archive and
+  packaging steps.
+- Whether `shell/`'s own native layer (out of this task's scope per the plan) is present
+  inside the `.app` — Task 4's stated job, not checked here.
+- GitHub Actions truncated the "Package unsigned .ipa" step's log output before the final
+  `unzip -l` totals line (no footer "N files" line appears in the captured log, for either
+  `gh run view --log` or the raw `gh api .../logs` job log) despite the step completing
+  successfully (exit 0, job conclusion `success`). This looks like a GitHub Actions log
+  buffering/capture limit hit by ~1,940 rapid log lines in one step, not a script defect —
+  confirmed by independently downloading and inspecting the artifact itself (above), which
+  shows the complete, correct content regardless of what the log capture kept.
