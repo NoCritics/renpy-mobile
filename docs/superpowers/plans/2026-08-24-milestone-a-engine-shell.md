@@ -1174,10 +1174,26 @@ _HANDLERS = {
 ```bash
 bash scripts/make_rig.sh
 cp -r shell-project/game .rig/game
-.rig/lib/py3-windows-x86_64/python.exe .rig/main.py
+rm -f .rig/log.txt .rig/traceback.txt
+timeout 25 .rig/lib/py3-windows-x86_64/python.exe .rig/main.py
 ```
 
-Expected: a Ren'Py window opens showing a black screen and stays open. Close it.
+The engine opens a window and idles, so it never exits on its own — `timeout` ends it.
+Exit code 124 means the timeout fired, which is **success**: the engine stayed up for the
+full 25 seconds instead of dying. Any other non-zero code means it crashed.
+
+Verify headlessly rather than by looking at the screen — this must be checkable by
+someone who cannot see the display, and later by CI:
+
+```bash
+echo "exit: $?"
+test -f .rig/traceback.txt && { echo "CRASHED:"; cat .rig/traceback.txt; }
+grep -E "Ren'Py|Windows-|Total time" .rig/log.txt | head
+```
+
+Expected: no `traceback.txt`, and `.rig/log.txt` containing Ren'Py's startup banner with
+version 8.5.3. A `traceback.txt` mentioning `NoGameDirectory` means `.rig/game` is missing
+— check the copy landed. One mentioning `vnshell` means the shell layer itself is broken.
 
 Note the shell project's `game/` goes to `.rig/game`, **not** `.rig/shell-project/game`.
 This mirrors iOS, where Ren'Py's distributor packages the game into `base/` alongside
@@ -1199,8 +1215,15 @@ rm -rf "$RIG/game"
 cp -r "$ROOT/shell-project/game" "$RIG/game"
 ```
 
-Run: `bash scripts/make_rig.sh && .rig/lib/py3-windows-x86_64/python.exe .rig/main.py`
-Expected: same window, now with no manual copy step.
+Run:
+```bash
+bash scripts/make_rig.sh
+rm -f .rig/log.txt .rig/traceback.txt
+timeout 25 .rig/lib/py3-windows-x86_64/python.exe .rig/main.py; echo "exit: $?"
+test -f .rig/traceback.txt && cat .rig/traceback.txt
+```
+Expected: exit 124 and no `traceback.txt`, now with no manual copy step — `.rig/game`
+must be present because `make_rig.sh` put it there.
 
 - [ ] **Step 4: Commit**
 
