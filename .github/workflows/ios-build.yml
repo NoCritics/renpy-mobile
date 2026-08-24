@@ -33,6 +33,9 @@ jobs:
       - name: Generate Xcode project
         run: bash scripts/ios/generate_xcode.sh
 
+      - name: Overlay shell layer
+        run: bash scripts/ios/overlay_shell.sh
+
       - name: Inspect generated project
         run: |
           set -euo pipefail
@@ -99,6 +102,59 @@ jobs:
 
       - name: Package unsigned .ipa
         run: bash scripts/ios/package_ipa.sh
+
+      - name: Verify shell layer is in the .ipa
+        run: |
+          set -euo pipefail
+          IPA="build/VNPlayer.ipa"
+
+          # Check the .ipa itself exists before grepping into it -- a missing .ipa and
+          # a .ipa that exists but lacks our files are different failures, and this
+          # script must not conflate them under one misleading "shell layer missing"
+          # message the way a bare `unzip -l ... | grep ... || fail` would if unzip
+          # itself failed (e.g. because $IPA does not exist).
+          [ -f "$IPA" ] || { echo "ASSERT FAILED: $IPA does not exist" >&2; exit 1; }
+
+          LISTING="$(unzip -l "$IPA")"
+
+          echo "=== vnshell/ modules present in $IPA ==="
+          VNSHELL_MATCHES="$(printf '%s\n' "$LISTING" | grep -E "vnshell/(lifecycle|purge|mailbox|state|transports)\.py" || true)"
+          if [ -z "$VNSHELL_MATCHES" ]; then
+            echo "ASSERT FAILED: no vnshell/*.py files found in $IPA -- shell layer missing" >&2
+            exit 1
+          fi
+          echo "$VNSHELL_MATCHES"
+
+          # vnshell/ alone is not proof: an .ipa could carry our vnshell/ beside Ren'Py's
+          # own generated main.py and still boot stock Ren'Py, since main.py is the file
+          # Ren'Py actually executes. Locate base/main.py inside the archive and check
+          # its content, not merely its presence.
+          echo "=== locating base/main.py inside $IPA ==="
+          MAIN_PY_ENTRY="$(printf '%s\n' "$LISTING" | grep -oE '[^[:space:]]+\.app/base/main\.py$' | head -1 || true)"
+          if [ -z "$MAIN_PY_ENTRY" ]; then
+            echo "ASSERT FAILED: no .app/base/main.py entry found in $IPA" >&2
+            exit 1
+          fi
+          echo "Found: $MAIN_PY_ENTRY"
+
+          # NoGameDirectory is the discriminating marker confirmed (see
+          # scripts/ios/overlay_shell.sh and docs/IOS-BUILD.md) to be present only in
+          # our shell/main.py and absent from Ren'Py's own generated main.py -- the
+          # path_to_* function names are NOT a valid marker, since Ren'Py's own
+          # renpy.py (the file it copies into base/main.py) defines functions of the
+          # same names.
+          MAIN_PY_TMP="$(mktemp)"
+          unzip -p "$IPA" "$MAIN_PY_ENTRY" > "$MAIN_PY_TMP"
+          if grep -q "NoGameDirectory" "$MAIN_PY_TMP"; then
+            echo "OK: $MAIN_PY_ENTRY contains NoGameDirectory -- this is our main.py"
+          else
+            echo "ASSERT FAILED: $MAIN_PY_ENTRY in $IPA does not contain 'NoGameDirectory' -- this is Ren'Py's stock launcher, not ours" >&2
+            rm -f "$MAIN_PY_TMP"
+            exit 1
+          fi
+          rm -f "$MAIN_PY_TMP"
+
+          echo "=== shell layer verified in $IPA ==="
 
       - name: Upload .ipa
         uses: actions/upload-artifact@v4
