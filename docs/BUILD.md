@@ -198,6 +198,31 @@ hypothesized might be required. Both halves — what proved necessary and what w
 and discarded — are recorded, per the task's own instruction that a step nobody can
 justify is a liability for the iOS plan.
 
+**This section covers two hook points, tried in this order, and the result at each is
+recorded separately below rather than overwritten** — the distinction between them is
+itself the most useful thing this task hands to the iOS plan:
+
+1. **Post-reload hook**, `purge_engine_state()`, called from
+   `lifecycle.select_next_basedir()`. Bootstrap calls this *after*
+   `renpy.reload_all()`, so any engine module reachable only through fresh module state
+   (image cache, render cache, font cache, audio/video subsystems) is already a new,
+   empty object here — cleanup at this point has nothing live to act on except
+   `sys.modules`/`sys.path`, which persist across `reload_all()` regardless.
+2. **Pre-restart hook**, `teardown_live_engine()`, called from `lifecycle._restart()`,
+   *before* `UtterRestartException` is raised. This is the last moment the outgoing
+   game's renderer, audio subsystem and caches are still live, reachable objects — the
+   same objects bootstrap.py's own `finally` (bootstrap.py:409-419) tears down once, at
+   process exit, outside the restart loop.
+
+The first pass at this task tried five memory candidates against the post-reload hook
+and found none of them helped. Task 8's coordinator caught that this was very likely
+the wrong hook — the objects being cleaned were freshly reconstructed, not the leaking
+ones — and asked for the same kind of calls to be retried from the pre-restart hook
+instead. Both experiments and both results are recorded below in full: the fix to
+*where* teardown runs did not turn out to fix the leak, but confirming that empirically,
+rather than assuming it from the theory, is exactly the discipline this section exists
+to enforce.
+
 ### Necessary: purging `sys.modules` and `sys.path` under the previous game's `game/` dir
 
 This is the only step that measurably fixed a reported failure. Before it existed, the
@@ -252,7 +277,7 @@ FAIL: memory grew from 185.3 MB to 261.2 MB over 5 cycles — leak
 
 `sys.modules` contamination: gone. Only the pre-existing memory-growth failure remained.
 
-### Tried and found unnecessary: five candidates for the memory-growth failure
+### Tried and found unnecessary (post-reload hook): five candidates for the memory-growth failure
 
 Each was added alone to `purge_engine_state`, run through `bash scripts/run_harness.sh
 4`, and compared against the module-purge-only baseline (185.3 MB → 261.2 MB, +40.9%
@@ -278,11 +303,13 @@ those subsystems exist and can be asked to free memory. All three failed defensi
 they were caught, logged as `failed: ...`, and did not crash the switch — which is
 exactly the behavior the brief required of every step.
 
-None of the five are in `shell/vnshell/purge.py`. Keeping them would have been
-speculative cleanup in a path that runs between every game switch, with measured
-evidence that they do not fix the failure they were added for.
+None of the five are in `purge_engine_state` in `shell/vnshell/purge.py`. Keeping them
+there would have been speculative cleanup in a path that runs between every game
+switch, with measured evidence that they do not fix the failure they were added for.
+(Four of the five reappear below, retried from the *other* hook, where they can
+actually execute against live objects — see "Necessary at the pre-restart hook" below.)
 
-### Full harness: `bash scripts/run_harness.sh 100`
+### First full harness (post-reload hook only): `bash scripts/run_harness.sh 100`
 
 ```
 Running 100 cycles (timeout 560s)...
@@ -415,31 +442,138 @@ consistently in the 17–27 MB range throughout the run (mean ≈ 22.2 MB/cycle)
 not front-loaded and not tapering off by cycle 100; a longer run would be expected to
 keep climbing at roughly the same rate.
 
+### Necessary at the pre-restart hook: `teardown_live_engine()`, called from `lifecycle._restart()`
+
+After the first full harness above, the coordinator reviewing this task caught a real
+error in where the five memory candidates were being tried: `select_next_basedir` runs
+*after* `renpy.reload_all()` has already replaced the engine's module objects, so those
+candidates were freeing freshly-constructed, still-empty caches — never the outgoing
+game's actual GL surfaces, audio buffers, or font caches, which by that point are
+orphaned and unreachable from Python. The only point those objects are still live and
+reachable is *before* `UtterRestartException` is raised, inside `lifecycle._restart()`.
+
+`shell/vnshell/purge.py` gained `teardown_live_engine()`, called from `_restart()`
+before the raise, making six calls against the still-live engine — the same ones
+bootstrap.py's own `finally` makes at process exit (bootstrap.py:409-419), plus
+`renpy.text.font.free_memory()`: stop audio (`renpy.audio.music.stop` on all three
+channels), stop video (`renpy.display.video.movie_stop`), free fonts
+(`renpy.text.font.free_memory`), quit the image cache (`renpy.display.im.cache.quit`),
+quit the renderer (`renpy.display.draw.quit`), and quit the audio subsystem
+(`renpy.audio.audio.quit`). `purge_engine_state` (the post-reload hook, `_purge_modules`
+only) was left unchanged, as instructed — the `sys.modules` fix must not regress.
+
+**The most uncertain call, `renpy.display.draw.quit()`, was flagged as possibly fatal**
+— quitting the renderer mid-session and expecting `main()`/bootstrap to reinitialize it
+cleanly on the next pass was untested territory. It was not fatal. A 4-cycle run showed
+all six teardown actions succeeding, every switch, with no traceback:
+
+```
+$ bash scripts/run_harness.sh 4
+...
+[vnshell] teardown: stopped audio
+[vnshell] teardown: stopped video
+[vnshell] teardown: freed fonts
+[vnshell] teardown: quit image cache
+[vnshell] teardown: quit renderer
+[vnshell] teardown: quit audio subsystem
+Resetting cache.
+...
+Engine exited cleanly.
+FAIL: memory grew from 184.8 MB to 261.0 MB over 5 cycles — leak
+```
+
+Engine exited cleanly (status 0), same as every prior run. `sys.modules` contamination:
+still gone. But the memory number at 4 cycles (184.8 → 261.0 MB) is indistinguishable
+from the post-reload-only baseline (185.3 → 261.2 MB) — within the same ~1 MB
+run-to-run noise band documented above. That is not proof by itself (4 cycles is too
+short to trust, per the earlier history of this file), so a full 100-cycle run was run
+to get a decisive answer rather than stopping on a short run that could be noise either
+way.
+
+### Second full harness (with pre-restart teardown added): `bash scripts/run_harness.sh 100`
+
+```
+$ bash scripts/run_harness.sh 100
+Running 100 cycles (timeout 560s)...
+...
+Engine exited cleanly.
+FAIL: memory grew from 184.9 MB to 2352.2 MB over 101 cycles — leak
+```
+
+All six teardown actions ("stopped audio", "stopped video", "freed fonts", "quit image
+cache", "quit renderer", "quit audio subsystem") succeeded on every one of the 100
+switches — zero `failed:` entries anywhere in the run's console output, confirmed by
+scanning it in full. `renpy.display.draw.quit()` mid-session, followed by the next pass
+through bootstrap reinitializing the renderer for the next game, is therefore
+**survivable at 100 consecutive switches**, not just a handful. `sys.modules`
+contamination and store-variable leakage: checked directly against
+`harness/out/observations.jsonl`, 100 records, 0 contamination, 0 store leaks — same as
+the first 100-cycle run.
+
+**The memory number is, within noise, the same as the first 100-cycle run.**
+136.1 MB → 2,352.2 MB over 101 samples, mean per-cycle
+delta **≈ 21.9 MB/switch** (computed the same way as the first run's ≈ 22.2 MB/switch:
+mean of `rss[i+1] - rss[i]` for `i` from cycle 1 to the second-to-last cycle, excluding
+the cold-start cycle-0-to-1 jump). Last five deltas: 25.7, 17.7, 25.7, 18.0, 21.6 MB —
+the same 17–27 MB band as before. `RSS_GROWTH_LIMIT` was left untouched.
+
+Every 10th sample in MB from this run, for direct comparison against the first run's
+table above: cycle 0: 136.1, 10: 396.4, 20: 610.7, 30: 830.4, 40: 1052.0, 50: 1265.3,
+60: 1482.4, 70: 1704.6, 80: 1922.6, 90: 2140.0, 100: 2352.2. Full `harness/out/rss.jsonl`
+from this run is not reproduced a second time verbatim in this file — the shape and
+summary statistics above are, to within measurement noise, the same curve as the first
+100-cycle run's, printed in full earlier in this section.
+
+**Conclusion: moving teardown to the correct, pre-restart hook — and confirming it
+executes successfully against live objects, including the previously-untested
+`draw.quit()` — did not change the measured memory-growth rate.** The coordinator's
+theory (post-reload cleanup was acting on the wrong, already-replaced objects) was
+correct and worth testing; the fix for *that* bug did not turn out to be the fix for
+the leak. Two possibilities remain, neither resolvable from this shell layer:
+1. `draw.quit()` / `im.cache.quit()` / `audio.audio.quit()` release Python-visible
+   references but the underlying native allocations (GL context objects, SDL surfaces,
+   decoded audio buffers) are not actually freed back to the OS by these calls, or are
+   re-leaked identically by whatever (re)initializes the next pass's interface.
+2. The leak is somewhere neither hook can reach at all — e.g. per-pass allocation inside
+   `renpy.main.main()`/`renpy.bootstrap.bootstrap()`'s own init sequence, which runs
+   after both of vnshell's hooks and is out of scope for this shell layer to alter
+   (modifying `renpy/` is explicitly disallowed for this task).
+
+Both are native/engine-internal, not Python-cache leaks reachable from `vnshell.purge`,
+regardless of which of the two hook points is used.
+
 ### Bottom line for Task 8
 
-- **`sys.modules`/`sys.path` contamination: fixed**, confirmed over 100 launches (50
-  A→B, 50 B→A), zero failures.
+- **`sys.modules`/`sys.path` contamination: fixed**, confirmed over 200 launches across
+  two separate 100-cycle runs (100 A→B/B→A switches each), zero failures in either.
 - **Store-variable leakage and save-directory isolation: still clean**, as at the Task 7
-  baseline — unaffected by this task, reconfirmed over 100 launches.
-- **Memory growth: not fixed, and not a purge-layer problem.** Every Python-level cache
-  reachable from `select_next_basedir` (image cache, font cache, forced GC) was tried
-  and made no measurable difference; the three caches that plausibly hold the actual
-  leaked memory (render tree, audio, video) are not reachable from this hook point at
-  all, because their owning subsystem does not exist yet on this pass. The growth is
-  linear and shows no sign of slowing over 100 cycles — this rules out a one-time
-  fixed-size leak (e.g. from the crashed first run's cleanup) and points to something
-  that reallocates roughly constant-sized state every single switch without releasing
-  the old copy — most likely at the Ren'Py C/SDL level (surfaces, GL objects, or similar
-  native display resources tied to `renpy.game.interface`, which is recreated fresh on
-  every pass through the restart loop) rather than in ordinary Python heap the GC can
-  reach.
+  baseline — unaffected by this task, reconfirmed over both 100-cycle runs.
+- **Memory growth: not fixed, at either hook point, and this was checked, not assumed.**
+  First pass: every Python-level cache reachable from the post-reload hook
+  (`select_next_basedir` → `purge_engine_state`) — image cache, font cache, forced
+  GC — was tried and made no measurable difference; the other three (render tree,
+  audio, video) could not even run there, because their owning subsystem does not exist
+  yet on that pass. Second pass, after the coordinator's correction: the same kind of
+  calls, plus `draw.quit()` and `audio.audio.quit()`, were moved to the pre-restart
+  hook (`lifecycle._restart()` → `teardown_live_engine()`), where the objects *are*
+  still live — confirmed by all six actions succeeding on every one of 100 switches,
+  with no crash, including the previously-untested `draw.quit()`. The measured growth
+  rate did not move: ≈ 22.2 MB/switch before, ≈ 21.9 MB/switch after — the same curve
+  within run-to-run noise, not a partial improvement. The growth is linear and shows no
+  sign of slowing over either 100-cycle run — this rules out a one-time fixed-size leak
+  and points to something that reallocates roughly constant-sized state every single
+  switch without releasing the old copy, and does so regardless of which of vnshell's
+  two hook points asks the engine to release its caches. Most likely explanation: the
+  actual native allocations (GL context objects, SDL surfaces, decoded audio/font
+  buffers) are not released by `im.cache.quit()`/`draw.quit()`/`audio.audio.quit()`
+  themselves, or are re-leaked identically by whatever (re)initializes the next pass's
+  `renpy.game.interface` inside `renpy.main.main()` — code this task is not permitted to
+  modify (`renpy/` is off-limits) and which runs after both of vnshell's hooks regardless.
 - **Consequence for the iOS plan:** as specified in the milestone brief, unbounded
   ~22 MB/switch growth is exactly the shape of failure that becomes a Jetsam kill on
-  iOS. The iOS app cannot currently switch games freely for an unbounded session; it
-  needs either a per-session switch cap sized to the platform's memory ceiling, or
-  further investigation into the native-level render/audio/video teardown that
-  `renpy.bootstrap`'s own (loop-external) `finally` performs at process exit — see the
-  `im.cache.quit()` / `draw.quit()` / `audio.audio.quit()` calls this module's docstring
-  references — to find out whether an equivalent can be invoked mid-run once the
-  relevant subsystem objects actually exist for the pass that is about to end, not the
-  pass that is about to begin.
+  iOS, and it survives fixing both *what* gets torn down and *when*. The iOS app cannot
+  currently switch games freely for an unbounded session; it needs a per-session switch
+  cap sized to the platform's memory ceiling. Further reduction, if any is possible,
+  would require instrumenting or modifying Ren'Py's own C/SDL-level teardown
+  (`renpy/`, out of scope for this shell-layer task) rather than anything callable from
+  `vnshell.purge` at either hook point available to it.

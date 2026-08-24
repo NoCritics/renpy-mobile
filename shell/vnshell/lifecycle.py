@@ -136,7 +136,20 @@ def _handle_quit_to_library(command: Command) -> None:
 
 
 def _restart() -> None:
-    """Ask Ren'Py to tear down and re-enter the bootstrap restart loop."""
+    """Tear down the live engine, then ask Ren'Py to re-enter the bootstrap restart loop.
+
+    Teardown must happen here, before the raise: this is the last point at which the
+    outgoing game's renderer, audio subsystem and caches are still live objects. Once
+    UtterRestartException is caught and renpy.reload_all() runs, those objects have
+    already been replaced — see vnshell.purge's module docstring for why
+    select_next_basedir (which runs *after* reload_all) is a different, and mostly
+    ineffective, hook for the same kind of cleanup.
+    """
+
+    from vnshell import purge
+
+    for action in purge.teardown_live_engine():
+        print(f"[vnshell] teardown: {action}")
 
     import renpy.game  # type: ignore
 

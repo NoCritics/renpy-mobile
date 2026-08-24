@@ -6,42 +6,121 @@ Nothing is therefore released between games, and this module has to do it by han
 
 Every step is defensive: a failure here must degrade the switch, not crash the app.
 
-Steps are added to ``purge_engine_state`` only in response to a failure the harness
-actually reported (see docs/BUILD.md, "Purge findings"). Do not add a step here
-speculatively — untested code in a path that runs between every game switch is worse
-than no cleanup at all.
+There are two hook points here, and they are not interchangeable — that distinction was
+learned the hard way and is the single most important thing this module has to say to
+the iOS plan:
 
-Only one step lives here: purging modules imported from the previous game's ``game/``
-directory. It is the only step that measurably fixed a reported failure (the
-``sys.modules`` contamination in docs/BUILD.md's harness baseline).
+- ``teardown_live_engine()`` runs from ``lifecycle._restart()``, *before*
+  ``UtterRestartException`` is raised. This is the only moment the outgoing game's
+  renderer, audio subsystem and caches are still live and reachable — it makes the same
+  calls bootstrap.py's own ``finally`` block makes at process exit (bootstrap.py:
+  409-419), just per switch instead of once at the end of the process.
+- ``purge_engine_state()`` runs from ``select_next_basedir()``, which bootstrap calls
+  *after* ``renpy.reload_all()``. By then the engine's module objects have already been
+  replaced, so anything reachable only through fresh module state (image cache, render
+  cache, font cache, audio/video subsystems) is a *new*, empty object at this point —
+  cleaning it up here has nothing to act on. Only ``sys.modules``/``sys.path``, which
+  persist across ``reload_all()`` regardless, are actually reachable and useful from
+  this hook.
 
-Five other candidates were tried against the memory-growth failure and removed —
-not because they errored (all but ``gc.collect()`` did, defensively, and are recorded
-below for that reason), but because none of them, alone or combined, moved the
-measured RSS growth outside run-to-run noise (~1 MB on a ~260 MB process). Full data in
-docs/BUILD.md, "Purge findings":
+Concretely: five candidates (``im.cache.clear()``, ``render.free_memory()``,
+``font.free_memory()``, ``gc.collect()``, audio/video stop) were tried from the
+post-reload hook (``purge_engine_state``) against the memory-growth failure. Three
+always raised (subsystem not yet initialized on the next pass) and the other two ran
+cleanly but measured no effect across 100 cycles — full data in docs/BUILD.md, "Purge
+findings". Only after moving the *same kind* of calls to the pre-restart hook
+(``teardown_live_engine``) did they have anything live to act on. Whether that actually
+moves the measured RSS curve is itself recorded in docs/BUILD.md, not assumed here — do
+not treat the existence of a live object as proof the leak is fixed.
 
-- ``renpy.display.im.cache.clear()`` — ran without error; no measurable effect.
-- ``renpy.text.font.free_memory()`` — ran without error; no measurable effect.
-- ``gc.collect()`` — ran without error, freed ~9,700 objects every switch; no
-  measurable effect on RSS outside noise.
-- ``renpy.display.render.free_memory()`` — always raised
-  ``AttributeError: 'NoneType' object has no attribute 'surftree'``. At the point
-  ``select_next_basedir`` runs, Ren'Py has not yet (re)created its rendering interface
-  for the next pass, so this call has nothing to act on from this hook.
-- ``renpy.audio.music.stop(...)`` / ``renpy.display.video.movie_stop(...)`` — both
-  always raised ``IndexError: list index out of range``, same root cause: the audio
-  and video subsystems are not initialized at this call site either.
-
-The memory growth is real (see docs/BUILD.md) but is not reachable from any Python-level
-cache this module can call between passes of the restart loop. It survives module
-purging, image-cache clearing, font-cache clearing, and forced GC, together or alone.
+Steps are added to either function only in response to a failure the harness actually
+reported. Do not add a step here speculatively — untested code in a path that runs
+between every game switch is worse than no cleanup at all.
 """
 
 from __future__ import annotations
 
 import os
 import sys
+
+
+def teardown_live_engine() -> list[str]:
+    """Release the running engine's native resources, while it still owns them.
+
+    Called from ``lifecycle._restart()`` before ``UtterRestartException`` is raised —
+    see the module docstring for why that timing, not ``select_next_basedir``, is the
+    only point these calls have anything live to act on.
+
+    Every step is independent and defensive, same contract as ``purge_engine_state``: a
+    failure here degrades to a logged ``failed: ...`` entry, it never propagates and
+    never blocks the restart.
+    """
+
+    actions: list[str] = []
+
+    for label, step in (
+        ("stopped audio", _stop_audio),
+        ("stopped video", _stop_video),
+        ("freed fonts", _free_fonts),
+        ("quit image cache", _quit_image_cache),
+        ("quit renderer", _quit_draw),
+        ("quit audio subsystem", _quit_audio),
+    ):
+        try:
+            step()
+            actions.append(label)
+        except Exception as exc:  # noqa: BLE001 — teardown must never propagate
+            actions.append(f"failed: {label}: {exc!r}")
+
+    return actions
+
+
+def _stop_audio() -> None:
+    import renpy.audio.music  # type: ignore
+
+    renpy.audio.music.stop(channel="music")
+    renpy.audio.music.stop(channel="sound")
+    renpy.audio.music.stop(channel="voice")
+
+
+def _stop_video() -> None:
+    import renpy.display.video  # type: ignore
+
+    renpy.display.video.movie_stop(only_fullscreen=False)
+
+
+def _free_fonts() -> None:
+    import renpy.text.font  # type: ignore
+
+    renpy.text.font.free_memory()
+
+
+def _quit_image_cache() -> None:
+    import renpy.display.im  # type: ignore
+
+    renpy.display.im.cache.quit()
+
+
+def _quit_draw() -> None:
+    """Quit the active renderer. This is the candidate most likely to be unsafe.
+
+    ``draw.quit()`` is one of the calls bootstrap.py's own ``finally`` makes, but it
+    makes it once, at process exit, with nothing expected to run afterward. Calling it
+    mid-session and expecting the next pass through bootstrap to reinitialize the
+    renderer cleanly is untested territory — see docs/BUILD.md, "Purge findings" for
+    whether this survived the harness.
+    """
+
+    import renpy.display  # type: ignore
+
+    if renpy.display.draw:
+        renpy.display.draw.quit()
+
+
+def _quit_audio() -> None:
+    import renpy.audio.audio  # type: ignore
+
+    renpy.audio.audio.quit()
 
 
 def purge_engine_state(previous_basedir: str | None) -> list[str]:
