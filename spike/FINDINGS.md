@@ -115,3 +115,85 @@ was broader than the hypothesis under test.
 
 Every probe in this project should carry a control that must succeed. Two conclusions in
 a row would have been wrong without one.
+
+---
+
+# START HERE after compaction
+
+Branch `spike/swift-bridge`, pushed. Last build: run 32787707051. `main` is untouched at
+the Milestone B merge; nothing here has been merged.
+
+## Two immediate next steps, in order
+
+**1. Move the button so it cannot be off-screen.** It is currently at
+`.padding(.trailing, 24)` in the top-right of `SpikeOverlayView`
+(`spike/Sources/SpikeOverlay.swift`). The owner reports no visible button — and notes the
+Ren'Py diagnostic text is *also* clipped at the top and edges in every screenshot, so the
+likeliest explanation is that the button is off-screen or under a safe-area inset, NOT
+that the overlay failed to install. Put it dead centre, make it large, give it an opaque
+background, and ignore safe areas. If it appears, window coexistence is proven and the
+remaining questions fall out immediately.
+
+**2. Make the install result visible.** `VNSpikeBootstrap.m` logs
+`NSLog(@"[vnspike] install_overlay rc=%d", rc)` and that line is **unreadable** over the
+USB relay — see the logging constraint below. Replace it with one argument-free literal
+per outcome:
+
+```objc
+if (rc == 1)       NSLog(@"[vnspike] overlay installed");
+else if (rc == 2)  NSLog(@"[vnspike] overlay already installed");
+else if (rc == -1) NSLog(@"[vnspike] overlay FAILED not main thread");
+else if (rc == -2) NSLog(@"[vnspike] overlay FAILED no window scene");
+else               NSLog(@"[vnspike] overlay FAILED unknown");
+```
+
+Until that lands we do not know whether `vnspike_install_overlay` returned 1, -1 or -2,
+which is the difference between "installed but invisible" and "never installed".
+
+## Device logging constraint (hard-won, applies to all of Milestone C)
+
+Over `idevicesyslog`, **only argument-free `NSLog` format strings are readable.** Anything
+with `%d`/`%s`/`%@` renders as `<decode: missing data>` because neither relay delivers the
+argument payload for a third-party binary. Evidence: `[vnspike] bootstrap registered`
+decoded perfectly; `install_overlay rc=%d` did not; SDL's own argument-free
+`UIApplicationSupportsIndirectInputEvents` message decoded every time.
+
+Instrument accordingly: distinct literal strings per case, never formatted values.
+
+## What is settled
+
+| Question | Answer |
+|---|---|
+| Can Swift be built into the generated project? | **YES** — XcodeGen owns the `.xcodeproj`; Ren'Py still produces `base/` |
+| Does it link the renios prebuilts, embed MetalANGLE, archive unsigned? | **YES** |
+| Does the shell layer survive? | **YES** — all 7 `vnshell` modules |
+| Can Python reach C via `ctypes.CDLL(None)`? | **NO** — control-verified: even `Py_Initialize` is unresolvable |
+| Can we build a C extension module instead? | **NO** — no `Python.h` and no `pyconfig.h` for the prebuilt `libpython3.12.a` |
+| Can Python drive a file mailbox? | **YES** — `mailbox control: OK (wrote 1, read 1)` on device, via Milestone A's own `FileTransport` |
+| Does the ObjC `+load` bootstrap run? | **YES** — `[vnspike] bootstrap registered` |
+| Does the SwiftUI overlay appear over SDL? | **UNKNOWN** — button not visible, but so is some Ren'Py text; see step 1 |
+| Does a Swift-written command reach Python? | **UNTESTED** — blocked on the button being tappable |
+
+## The methodological thread, six instances now
+
+Every wrong turn tonight was an instrument that could not fail, or could not detect what it
+claimed to:
+
+1. String-grep over a stripped Mach-O "proved" C symbols were stripped. Control test
+   (`SDL_CreateWindow`, `launcher_main` also "missing") showed it measured nothing.
+2. First device probe suggested "C fails, Swift `@_cdecl` works". Adding `Py_Initialize`
+   as a must-succeed control showed the seam fails wholesale.
+3. `build_spike.sh` copied `*.h *.c *.swift` and silently skipped `*.m`, so the overlay
+   bootstrap was never compiled — presenting as "SwiftUI does not work over SDL". The
+   guard missed it because it named two files individually instead of iterating the
+   directory.
+
+**Standing rule for Milestone C: every probe carries a control that must succeed, and
+every guard iterates its subjects rather than naming them.**
+
+## Do not re-derive
+
+- `-Wl,-export_dynamic` was added and then removed. It was never relevant.
+- Both consulted models (Codex, Gemini) recommended the `ctypes` bridge. It does not work
+  on this platform. That is not a flaw in their reasoning — it is why the spike ran.
+- `xcodeprojer.py` pbxproj injection was rejected by both models and never attempted.
