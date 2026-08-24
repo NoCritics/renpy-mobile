@@ -18,19 +18,45 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LOGS="$ROOT/logs"
 SECONDS_TO_CAPTURE="${1:-}"
 
-# Honour an explicit override, else look where setup put it, else hope it is on PATH.
-TOOLS="${VNPLAYER_IMOBILEDEVICE:-C:/Users/user/tools/libimobiledevice}"
+# Finding the tool is fiddlier than it looks, because "bash" on Windows can be Git Bash
+# (paths like /c/Users/... or C:/Users/...) or WSL (/mnt/c/Users/...), and the same
+# directory has a different spelling in each. Try every spelling rather than assuming
+# which bash the user happens to have first on PATH.
+SYSLOG=""
+IDEVICE_ID=""
 
-if [ -x "$TOOLS/idevicesyslog.exe" ]; then
-    SYSLOG="$TOOLS/idevicesyslog.exe"
-    IDEVICE_ID="$TOOLS/idevice_id.exe"
-elif command -v idevicesyslog >/dev/null 2>&1; then
+# Derive the Windows user directory from whichever variable this shell exposes.
+WINHOME_RAW="${USERPROFILE:-${HOME:-}}"
+WINHOME_TAIL="$(printf '%s' "$WINHOME_RAW" | tr '\\' '/' | sed 's|^[A-Za-z]:||')"
+
+CANDIDATES=""
+[ -n "${VNPLAYER_IMOBILEDEVICE:-}" ] && CANDIDATES="$VNPLAYER_IMOBILEDEVICE"
+for prefix in "C:" "/c" "/mnt/c"; do
+    CANDIDATES="$CANDIDATES ${prefix}${WINHOME_TAIL}/tools/libimobiledevice"
+    CANDIDATES="$CANDIDATES ${prefix}/Users/$(whoami)/tools/libimobiledevice"
+done
+CANDIDATES="$CANDIDATES ${HOME:-}/tools/libimobiledevice"
+
+for dir in $CANDIDATES; do
+    if [ -x "$dir/idevicesyslog.exe" ]; then
+        SYSLOG="$dir/idevicesyslog.exe"
+        IDEVICE_ID="$dir/idevice_id.exe"
+        break
+    fi
+done
+
+if [ -z "$SYSLOG" ] && command -v idevicesyslog >/dev/null 2>&1; then
     SYSLOG="$(command -v idevicesyslog)"
     IDEVICE_ID="$(command -v idevice_id)"
-else
-    echo "idevicesyslog not found." >&2
-    echo "Expected it at $TOOLS, or on PATH." >&2
+fi
+
+if [ -z "$SYSLOG" ]; then
+    echo "idevicesyslog not found. Looked in:" >&2
+    for dir in $CANDIDATES; do echo "  $dir" >&2; done
+    echo "  ...and on PATH" >&2
+    echo >&2
     echo "Set VNPLAYER_IMOBILEDEVICE to its directory if it lives elsewhere." >&2
+    echo "Note: this needs Git Bash, not WSL — WSL cannot reach the USB device." >&2
     exit 1
 fi
 
