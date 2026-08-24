@@ -49,10 +49,13 @@ grep -q "NoGameDirectory" "$BASE/main.py" || {
 echo "OK: base/main.py is ours (contains NoGameDirectory)"
 
 [ -d "$BASE/vnshell" ] || { echo "ASSERT FAILED: $BASE/vnshell does not exist" >&2; exit 1; }
-for f in lifecycle.py purge.py mailbox.py state.py transports.py; do
+# All seven modules, not just the five originally listed: __init__.py is what makes
+# vnshell a package (its absence breaks "import vnshell" outright -- exactly the failure
+# this task exists to catch), and harness.py is as much a part of the shell as the rest.
+for f in __init__.py harness.py lifecycle.py purge.py mailbox.py state.py transports.py; do
     [ -f "$BASE/vnshell/$f" ] || { echo "ASSERT FAILED: $BASE/vnshell/$f does not exist" >&2; exit 1; }
 done
-echo "OK: base/vnshell/ contains lifecycle.py, purge.py, mailbox.py, state.py, transports.py"
+echo "OK: base/vnshell/ contains __init__.py, harness.py, lifecycle.py, purge.py, mailbox.py, state.py, transports.py"
 
 # base/game/ and base/renpy/ are needed for shell/main.py's own path_to_gamedir() /
 # path_to_common() and "import renpy.bootstrap" to succeed at startup -- necessary,

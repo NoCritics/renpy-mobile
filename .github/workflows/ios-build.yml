@@ -33,6 +33,34 @@ jobs:
       - name: Generate Xcode project
         run: bash scripts/ios/generate_xcode.sh
 
+      - name: Assert pre-overlay base/main.py is Ren'Py's, not ours
+        run: |
+          set -euo pipefail
+          BASE="$(find build/xcode -maxdepth 2 -type d -name base | head -1)"
+          [ -n "$BASE" ] || { echo "ASSERT FAILED: no base/ under build/xcode" >&2; exit 1; }
+          MAIN_PY="$BASE/main.py"
+          [ -f "$MAIN_PY" ] || { echo "ASSERT FAILED: $MAIN_PY does not exist before the overlay has run" >&2; exit 1; }
+
+          SIZE="$(stat -f%z "$MAIN_PY" 2>/dev/null || stat -c%s "$MAIN_PY")"
+          echo "Pre-overlay $MAIN_PY is $SIZE bytes (Ren'Py's own ios_populate output, not yet overlaid)."
+
+          # This is the other half of the discrimination claim in "Overlay shell layer"
+          # and "Verify shell layer is in the .ipa": both assert NoGameDirectory IS
+          # present after the overlay because it is absent from Ren'Py's own generated
+          # main.py. That absence was previously confirmed only by reading
+          # vendor/renpy-8.5.3-sdk/renpy.py's source directly, never by inspecting the
+          # actual file CI generates -- because the overlay used to run immediately
+          # after generation, nothing ever captured its pre-overlay content. Assert it
+          # here, before the overlay runs, so the claim is a logged fact on every build,
+          # not an inference -- and so a future Ren'Py release that starts generating a
+          # main.py containing our marker string would be caught here, loudly, instead
+          # of silently destroying the guard's ability to discriminate downstream.
+          if grep -q "NoGameDirectory" "$MAIN_PY"; then
+            echo "ASSERT FAILED: pre-overlay $MAIN_PY already contains 'NoGameDirectory' -- the marker used to distinguish our main.py from Ren'Py's no longer discriminates; the downstream overlay/.ipa guards must be revisited" >&2
+            exit 1
+          fi
+          echo "OK: pre-overlay $MAIN_PY does not contain NoGameDirectory -- confirmed on THIS build, not inferred from source alone. NoGameDirectory remains a valid marker for 'this is ours, not Ren'Py's'."
+
       - name: Overlay shell layer
         run: bash scripts/ios/overlay_shell.sh
 
@@ -118,12 +146,19 @@ jobs:
           LISTING="$(unzip -l "$IPA")"
 
           echo "=== vnshell/ modules present in $IPA ==="
-          VNSHELL_MATCHES="$(printf '%s\n' "$LISTING" | grep -E "vnshell/(lifecycle|purge|mailbox|state|transports)\.py" || true)"
-          if [ -z "$VNSHELL_MATCHES" ]; then
-            echo "ASSERT FAILED: no vnshell/*.py files found in $IPA -- shell layer missing" >&2
-            exit 1
-          fi
-          echo "$VNSHELL_MATCHES"
+          # All seven modules, not just the five originally checked: __init__.py makes
+          # vnshell a package (without it "import vnshell" fails outright), and
+          # harness.py is as much a part of the shell as the rest. A guard that only
+          # watched five of seven files would print all-green while the sixth or
+          # seventh silently failed to reach the bundle.
+          for f in __init__ harness lifecycle purge mailbox state transports; do
+            MATCH="$(printf '%s\n' "$LISTING" | grep -E "vnshell/${f}\.py" || true)"
+            if [ -z "$MATCH" ]; then
+              echo "ASSERT FAILED: vnshell/${f}.py not found in $IPA -- shell layer incomplete" >&2
+              exit 1
+            fi
+            echo "$MATCH"
+          done
 
           # vnshell/ alone is not proof: an .ipa could carry our vnshell/ beside Ren'Py's
           # own generated main.py and still boot stock Ren'Py, since main.py is the file
@@ -153,6 +188,21 @@ jobs:
             exit 1
           fi
           rm -f "$MAIN_PY_TMP"
+
+          # overlay_shell.sh prunes __pycache__/*.pyc after copying shell/vnshell/, but
+          # that was previously confirmed only by a manual one-off check on a downloaded
+          # artifact -- never wired in as a gate that runs on every build. Assert it here
+          # so a regression (e.g. someone reordering the prune before the copy, or
+          # removing it) fails the build instead of silently shipping mismatched
+          # bytecode.
+          echo "=== confirming no __pycache__/*.pyc reached $IPA ==="
+          PYCACHE_MATCHES="$(printf '%s\n' "$LISTING" | grep -E "__pycache__|\.pyc$" || true)"
+          if [ -n "$PYCACHE_MATCHES" ]; then
+            echo "ASSERT FAILED: __pycache__/*.pyc found in $IPA -- the overlay's prune step did not run or did not work:" >&2
+            echo "$PYCACHE_MATCHES" >&2
+            exit 1
+          fi
+          echo "OK: no __pycache__/*.pyc anywhere in $IPA"
 
           echo "=== shell layer verified in $IPA ==="
 
