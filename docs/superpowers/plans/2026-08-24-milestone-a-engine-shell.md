@@ -903,7 +903,11 @@ def install(renpy_base: str) -> None:
 
     global _installed
 
-    STATE.shell_project_dir = os.path.join(renpy_base, "shell-project")
+    # The shell project's game/ lives directly at renpy_base, mirroring iOS, where
+    # Ren'Py's distributor packages the game into base/ alongside main.py and renpy/.
+    # This also keeps bootstrap.py:315 happy: it calls path_to_gamedir(renpy_base, ...)
+    # before the restart loop is ever entered, and our strict version needs game/ there.
+    STATE.shell_project_dir = renpy_base
     STATE.saves_root = os.environ.get(
         "VNPLAYER_SAVES_ROOT", os.path.join(renpy_base, "saves")
     )
@@ -987,22 +991,30 @@ _HANDLERS = {
 
 ```bash
 bash scripts/make_rig.sh
-cp -r shell-project .rig/shell-project
+cp -r shell-project/game .rig/game
 .rig/lib/py3-windows-x86_64/python.exe .rig/main.py
 ```
 
 Expected: a Ren'Py window opens showing a black screen and stays open. Close it.
 
-If it instead reports `No game/ directory`, the shell project was not copied — check
-`.rig/shell-project/game/script.rpy` exists.
+Note the shell project's `game/` goes to `.rig/game`, **not** `.rig/shell-project/game`.
+This mirrors iOS, where Ren'Py's distributor packages the game into `base/` alongside
+`main.py` and `renpy/`, making `base/` itself a valid base directory. It is also load-
+bearing: `bootstrap.py:315` calls `path_to_gamedir(basedir, name)` with
+`basedir = args.basedir or renpy_base` **before** entering the restart loop. With no
+`--basedir` argument that is the rig root, and our deliberately strict `path_to_gamedir`
+raises `NoGameDirectory` unless `game/` is there — killing the process before the loop
+is reached.
+
+If it reports `No game/ directory`, the copy did not happen — check `.rig/game/script.rpy`.
 
 - [ ] **Step 3: Fold the shell project into the rig builder**
 
 Add to `scripts/make_rig.sh`, immediately before the final `echo`:
 
 ```bash
-rm -rf "$RIG/shell-project"
-cp -r "$ROOT/shell-project" "$RIG/shell-project"
+rm -rf "$RIG/game"
+cp -r "$ROOT/shell-project/game" "$RIG/game"
 ```
 
 Run: `bash scripts/make_rig.sh && .rig/lib/py3-windows-x86_64/python.exe .rig/main.py`
@@ -1264,8 +1276,29 @@ import sys
 
 from vnshell.state import STATE
 
-_cycle = 0
-_started = False
+
+# Cycle state is file-backed rather than held in module globals. Game switching runs
+# renpy.reload_all(), and whether that reloads non-Ren'Py modules on sys.path is not
+# something we have verified. If this module were reloaded, module-level counters would
+# reset and the harness would cycle forever instead of terminating — a hang rather than
+# a visible failure. A file is immune to whatever the reload semantics turn out to be.
+def _cycle_file() -> str:
+    return os.path.join(os.path.dirname(os.environ["VNPLAYER_RSS_LOG"]), "cycle.txt")
+
+
+def _read_cycle() -> int:
+    try:
+        with open(_cycle_file(), "r", encoding="utf-8") as f:
+            return int(f.read().strip() or "0")
+    except (OSError, ValueError):
+        return 0
+
+
+def _write_cycle(value: int) -> None:
+    path = _cycle_file()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(str(value))
 
 
 def enabled() -> bool:
@@ -1320,43 +1353,41 @@ def _rss_bytes() -> int:
         return 0
 
 
-def _record_rss() -> None:
+def _record_rss(cycle: int) -> None:
     out = os.environ.get("VNPLAYER_RSS_LOG")
     if not out:
         return
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "a", encoding="utf-8") as f:
-        f.write(json.dumps({"cycle": _cycle, "rss_bytes": _rss_bytes()}) + "\n")
+        f.write(json.dumps({"cycle": cycle, "rss_bytes": _rss_bytes()}) + "\n")
 
 
 def start() -> None:
-    """Begin cycling. Called once, from the shell project's first tick."""
+    """Begin cycling. Called from the shell project's tick; safe to call repeatedly."""
 
-    global _started
-
-    if _started or not enabled():
+    if not enabled() or _read_cycle() > 0:
         return
 
-    _started = True
     advance()
 
 
 def advance() -> None:
     """Move to the next game, or finish the run."""
 
-    global _cycle
-
     if not enabled():
         return
 
-    _record_rss()
-    _cycle += 1
+    cycle = _read_cycle()
+    _record_rss(cycle)
 
-    if _cycle > _total_cycles():
+    cycle += 1
+    _write_cycle(cycle)
+
+    if cycle > _total_cycles():
         sys.exit(0)
 
     games = _games()
-    target = games[(_cycle - 1) % len(games)]
+    target = games[(cycle - 1) % len(games)]
 
     from vnshell import lifecycle
     from vnshell.mailbox import Command
