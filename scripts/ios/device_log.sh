@@ -98,6 +98,47 @@ fi
 # fallback then prints a flat lie about a grep that in fact matched plenty. That exact
 # bug shipped in an earlier version of this script and reported "(none matched)" over a
 # capture containing 1,515 matching lines.
+# Prints the lines from our process that actually SAY something, and accounts for the
+# ones that do not.
+#
+# This replaced a plain `grep -m 40`, which took the first 40 matching lines in
+# chronological order. That was actively misleading rather than merely incomplete: 38 of
+# those 40 slots went to "<decode: missing data>" -- lines that by construction carry no
+# information -- and the cap then truncated the capture BEFORE
+# "[vnspike] overlay installed", the single line the run existed to produce. The summary
+# therefore showed no overlay line at all while the raw log contained one, and the
+# conclusion it invited ("the overlay never installed") was the opposite of the truth.
+#
+# So: drop the undecodable lines, show everything that remains, and print the count of
+# what was dropped so the suppression is visible rather than silent. If the readable set
+# is ever itself too long to show, say so explicitly instead of trimming quietly.
+report_readable() {
+    local out="$1"
+    local ours readable dropped shown
+    ours="$(grep -cE "VNPlayer\[[0-9]+\]" "$out" || true)"
+    readable="$(grep -E "VNPlayer\[[0-9]+\]" "$out" | grep -vcF "<decode: missing data>" || true)"
+    dropped=$(( ours - readable ))
+
+    if [ "$ours" -eq 0 ]; then
+        echo "(no lines from our process)"
+        return
+    fi
+
+    shown="$READABLE_LINE_CAP"
+    grep -E "VNPlayer\[[0-9]+\]" "$out" | grep -vF "<decode: missing data>" | head -n "$shown"
+
+    if [ "$readable" -eq 0 ]; then
+        echo "(nothing from our process decoded: all $ours lines were <decode: missing data>)"
+    elif [ "$readable" -gt "$shown" ]; then
+        echo "... $(( readable - shown )) further readable lines not shown; see $out"
+    fi
+    echo "[$readable readable, $dropped undecodable, $ours total from our process]"
+}
+
+# Generous by design: the readable lines are the whole point of the capture, and the
+# undecodable ones no longer compete with them for room.
+READABLE_LINE_CAP=200
+
 summarize_capture() {
     local out="$1"
 
@@ -107,7 +148,7 @@ summarize_capture() {
     echo "      the payload for a third-party binary's own entries. The readable copy is"
     echo "      in the plain-text section above. <private> would mean something else:"
     echo "      the device redacting, which enable_public_log.sh's %{public}s patch fixes."
-    grep -m 20 -E "^[A-Za-z]{3} +[0-9]+ [0-9:.]+ VNPlayer\[[0-9]+\]" "$out" || echo "(none)"
+    report_readable "$out"
 
     echo
     echo "=== sandbox denials (what the app tried to do and could not) ==="
@@ -172,7 +213,7 @@ echo "     and $(wc -l < "$OUT_LEGACY" 2>/dev/null || echo 0) lines (plain text)
 echo
 echo "=== Ren'Py's own output, as plain text (legacy relay) ==="
 if [ -s "$OUT_LEGACY" ]; then
-    grep -m 40 -E "VNPlayer\[[0-9]+\]" "$OUT_LEGACY" || echo "(no lines from our process)"
+    report_readable "$OUT_LEGACY"
 else
     echo "(legacy capture empty)"
 fi
