@@ -17,7 +17,7 @@ command -v xcodegen >/dev/null 2>&1 || { echo "xcodegen not installed" >&2; exit
 # Our sources go in beside Ren'Py's, where project.yml expects them.
 rm -rf "$PROJDIR/vnspike"
 mkdir -p "$PROJDIR/vnspike"
-cp "$ROOT"/spike/Sources/*.h "$ROOT"/spike/Sources/*.c "$ROOT"/spike/Sources/*.swift "$PROJDIR/vnspike/"
+cp -R "$ROOT"/spike/Sources/. "$PROJDIR/vnspike/"
 cp "$ROOT/spike/project.yml" "$PROJDIR/project.yml"
 
 # Assert the inputs project.yml names actually exist, rather than letting xcodebuild
@@ -36,15 +36,26 @@ GENERATED="$(find "$PROJDIR" -maxdepth 1 -name "*.xcodeproj" -print -quit)"
 [ -n "$GENERATED" ] || { echo "ASSERT FAILED: xcodegen produced no .xcodeproj" >&2; exit 1; }
 echo "Generated: $GENERATED"
 
-# The whole point is that Swift is IN the target. Verify rather than assume.
-grep -q "SpikeOverlay.swift" "$GENERATED/project.pbxproj" || {
-    echo "ASSERT FAILED: SpikeOverlay.swift is not referenced in the generated project" >&2
-    exit 1
-}
-grep -q "VNBridge.c" "$GENERATED/project.pbxproj" || {
-    echo "ASSERT FAILED: VNBridge.c is not referenced in the generated project" >&2
-    exit 1
-}
-echo "OK: Swift and C bridge sources are members of the target"
+# The whole point is that our sources are IN the target. Check EVERY one of them, not a
+# hand-picked two.
+#
+# The hand-picked version of this check passed while VNSpikeBootstrap.m was silently
+# absent -- the copy above globbed *.h *.c *.swift and quietly omitted *.m -- so the
+# overlay never installed and the failure looked like "SwiftUI does not work over SDL".
+# A guard that names its subjects individually only ever guards those subjects.
+MISSING=0
+for f in "$ROOT"/spike/Sources/*; do
+    name="$(basename "$f")"
+    case "$name" in
+        *.h) continue ;;   # headers are included, not compiled, and need no build ref
+    esac
+    if ! grep -q "$name" "$GENERATED/project.pbxproj"; then
+        echo "ASSERT FAILED: $name is not referenced in the generated project" >&2
+        MISSING=1
+    fi
+done
+[ "$MISSING" -eq 0 ] || exit 1
+echo "OK: every source under spike/Sources/ is a member of the target:"
+ls "$PROJDIR/vnspike/"
 
 xcodebuild -list -project "$GENERATED"
