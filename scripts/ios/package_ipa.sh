@@ -48,7 +48,8 @@ APP="$(find "$ARCHIVE/Products/Applications" -maxdepth 1 -name "*.app" | head -1
 BUILT_BUNDLE_ID="$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP/Info.plist")"
 echo "Bundle ID read back from $APP/Info.plist: $BUILT_BUNDLE_ID"
 [ "$BUILT_BUNDLE_ID" = "$BUNDLE_ID" ] || {
-    echo "WARNING: built bundle id ('$BUILT_BUNDLE_ID') does not match the override ('$BUNDLE_ID')" >&2
+    echo "ASSERT FAILED: built bundle id is '$BUILT_BUNDLE_ID', required '$BUNDLE_ID' -- the PRODUCT_BUNDLE_IDENTIFIER override did not take effect" >&2
+    exit 1
 }
 
 mkdir -p "$BUILD/Payload"
@@ -63,9 +64,21 @@ rm -rf "$BUILD/Payload"
 [ -f "$BUILD/VNPlayer.ipa" ] || { echo "VNPlayer.ipa was not created" >&2; exit 1; }
 
 IPA_BYTES="$(stat -f%z "$BUILD/VNPlayer.ipa" 2>/dev/null || stat -c%s "$BUILD/VNPlayer.ipa")"
-MIN_BYTES=$((1 * 1024 * 1024))
+# Floor, not a ceiling: a real archive of this project measured ~28,006,947 bytes
+# (~26.7 MiB) on CI run 32744985444 (Task 3), dominated by the VNPlayer executable
+# itself (~27MB, linking 40 prebuilt .a's) plus MetalANGLE.framework (~16MB
+# uncompressed) and Ren'Py's own base/ runtime. 15 MiB is well below that measured
+# figure -- enough headroom that this game's normal growth (more script, more
+# assets) won't trip it -- while still catching a catastrophically truncated or
+# partially-linked build (e.g. the executable failing to link against most of the
+# prebuilt libraries) that a bare non-empty check would miss. Whoever raises this
+# later should have a new measured baseline to raise it against, not a guess.
+# Deliberately no upper bound: the .ipa will only grow once real game content and
+# a native shell UI (Milestone B/Task 4+) land, and a ceiling would fail the build
+# for the legitimate reason that the app got bigger.
+MIN_BYTES=$((15 * 1024 * 1024))
 [ "$IPA_BYTES" -ge "$MIN_BYTES" ] || {
-    echo "VNPlayer.ipa is only $IPA_BYTES bytes -- too small to be a real archive" >&2
+    echo "VNPlayer.ipa is only $IPA_BYTES bytes -- too small to be a real archive (floor: $MIN_BYTES bytes / 15 MiB)" >&2
     exit 1
 }
 
