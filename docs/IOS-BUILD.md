@@ -22,9 +22,12 @@ All runs: https://github.com/NoCritics/renpy-mobile/actions/workflows/ios-build.
 | [32740043788](https://github.com/NoCritics/renpy-mobile/actions/runs/32740043788) | FAILED at "Fetch dependencies" | Corrected the script to use `vendor/renios` as the unpack directory, but introduced a `set -u` bug: `scripts/ios/fetch_ios_deps.sh: line 26: name: unbound variable`. A single `local a=... b=${4:-$a}` statement evaluates all right-hand sides before any assignment lands, so `$a` is still unset under `nounset` when computing `b`'s default. Reproduced and confirmed in isolation with `bash -c 'set -u; f(){ local x="$1" y="${2:-$x}"; ...}; f hello'`. |
 | [32740201093](https://github.com/NoCritics/renpy-mobile/actions/runs/32740201093) | **GREEN** | Split the `local` statement into two. Full job passed: toolchain recorded, both archives fetched and checksum-verified, `renios` inventoried, artifact uploaded. First clean inventory. |
 | [32740372920](https://github.com/NoCritics/renpy-mobile/actions/runs/32740372920) | **GREEN** | Added `xcrun --sdk iphoneos --show-sdk-version` / `xcodebuild -showsdks` to the toolchain step — the brief's Step 4 explicitly asks for the runner's default iOS SDK version, and the original toolchain step never captured it. Also downloaded via `gh run download` to inspect the uploaded `Info.plist` / `project.pbxproj` artifact directly (`renios-inventory`, artifact ID 9524825897). |
+| [32741864714](https://github.com/NoCritics/renpy-mobile/actions/runs/32741864714) | **GREEN** | Review fix: an earlier draft of this document claimed the `prebuilt/debug/` `.a` set matched `prebuilt/release/` "by name prefix" based on a combined, `head -50`-truncated listing that could not actually see the debug directory's contents. Split the inventory step into separate, unbounded, sorted `find` calls per directory (also removing the `head` cap, which was a latent `SIGPIPE`/`pipefail` hazard). This run is the actual evidence for the 40/40 split and identical filename set recorded below. |
 
-Final green run: **32740372920**. All facts below are from that run's log and its
-`renios-inventory` artifact, cross-checked against 32740201093 where the two overlap.
+Final green run for the toolchain/Xcode-project/Info.plist facts: **32740372920**.
+Final green run for the prebuilt-library facts: **32741864714**. All facts below are
+traced to whichever of these (or 32740201093, where all three overlap) actually shows
+them.
 
 ## Toolchain on the runner
 
@@ -196,21 +199,38 @@ needs to make, not an assumption to inherit silently. Flagging rather than guess
 
 ## Prebuilt static libraries
 
-From `find vendor/renios -name "*.a" | wc -l` and `du -sh vendor/renios`:
+Originally the inventory step listed `.a` files with a single `find ... | head -50`
+across both `prebuilt/release/` and `prebuilt/debug/` combined — that cap made it
+impossible to actually see the full debug-directory listing, and an earlier version of
+this document claimed the debug set was "confirmed same library set by name prefix"
+without evidence for that claim. Caught in review. The inventory step now runs
+`find` separately per directory, unbounded and sorted, so this is independently
+verified from run
+[32741864714](https://github.com/NoCritics/renpy-mobile/actions/runs/32741864714)
+(green):
 
-- **80** `.a` files total, split evenly between `prototype/prebuilt/release/` and
-  `prototype/prebuilt/debug/` (40 each, by directory name pattern in the listing —
-  release list shown in full below; debug list truncated by the `head -50` cap in the
-  script but confirmed same library set by name prefix).
-- Release set (`prototype/prebuilt/release/*.a`, 40 files): `libcrypto`, `libbz2`,
-  `libyuv`, `libfreetype`, `libpng16`, `libharfbuzz-cairo`, `libz`, `libbrotlienc`,
-  `libaom`, `libbrotlidec`, `libturbojpeg`, `libavutil`, `libavfilter`, `libavcodec`,
-  `libavresample`, `liblzma`, `libSDL2main`, `libsharpyuv`, `libwebp`, `libavformat`,
-  `libbrotlicommon`, `librenpy`, `libfribidi`, `libassimp`, `libwebpdemux`,
-  `libpython3.12`, `libharfbuzz`, `libswresample`, `libSDL2`, `libmockrt`, `libssl`,
-  `libharfbuzz-subset`, `libSDL2_test`, `libffi`, `libswscale`, `libjpeg`, `librenpython`,
-  `libwebpmux`, `libavif`, `libSDL2_image`.
-- **`du -sh vendor/renios` = 364M.** This is the combined size of the *entire* `renios`
+- **`prototype/prebuilt/release/`: 40 `.a` files.** **`prototype/prebuilt/debug/`: 40
+  `.a` files.** Both counts are `wc -l` on their own directory-scoped `find`, not a
+  combined/truncated listing.
+- **The two directories contain the identical 40 filenames**, verified by comparing the
+  two full sorted listings from the same run (not inferred from a shared prefix). Sorted
+  list (same in both directories): `libaom`, `libassimp`, `libavcodec`, `libavfilter`,
+  `libavformat`, `libavif`, `libavresample`, `libavutil`, `libbrotlicommon`,
+  `libbrotlidec`, `libbrotlienc`, `libbz2`, `libcrypto`, `libffi`, `libfreetype`,
+  `libfribidi`, `libharfbuzz-cairo`, `libharfbuzz-subset`, `libharfbuzz`, `libjpeg`,
+  `liblzma`, `libmockrt`, `libpng16`, `libpython3.12`, `librenpy`, `librenpython`,
+  `libSDL2_image`, `libSDL2_test`, `libSDL2`, `libSDL2main`, `libsharpyuv`, `libssl`,
+  `libswresample`, `libswscale`, `libturbojpeg`, `libwebp`, `libwebpdemux`, `libwebpmux`,
+  `libyuv`, `libz`.
+- **`du -sh vendor/renios` = 378M** (run 32741864714). An earlier green run
+  ([32740201093](https://github.com/NoCritics/renpy-mobile/actions/runs/32740201093))
+  measured **364M** for the same, checksum-pinned, byte-identical archive on a different
+  ephemeral runner instance. This 14M delta between two runs of an identical input is
+  itself unexplained — plausibly APFS disk-usage accounting variance between VM
+  instances rather than a real content difference (file names, counts, and timestamps
+  match exactly across both runs), but that is a guess, not a finding; treat the
+  directory-size figure as **approximate, not exact**, and don't be surprised if a future
+  run reports a third number. This is the combined size of the *entire* `renios`
   directory (both `.a` sets, the Xcode project, image assets, the `buildlib/` Python
   package, `__pycache__`, etc.) — **not** a `.a`-files-only figure. No command in this
   task isolated the static-library-only byte total; that is **not determined**.
@@ -275,8 +295,11 @@ whichever task first needs to produce a buildable Xcode project.
 
 ## Not determined (do not infer these)
 
-- Exact byte size of the `.a` files alone (only the 364M whole-package figure and the
-  80-file count are known).
+- Exact byte size of the `.a` files alone (only the whole-package `du` figure — 364M or
+  378M depending on the run, see "Prebuilt static libraries" above — and the 80-file
+  count are known).
+- Why `du -sh vendor/renios` reported two different totals (364M, then 378M) across two
+  runs of the same checksum-pinned zip.
 - Contents/purpose of `buildlib/renios/` and `xcodeprojer.py` beyond their filenames.
 - Contents/purpose of `hash.txt`.
 - The actual mechanism that populates `prototype/base/` (name of the script, its inputs,
