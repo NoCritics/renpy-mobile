@@ -83,10 +83,11 @@ identifier `io.github.nocritics.vnplayer`.
 `Info.plist`. Treated as a **settled decision for now** — revisit only if a future
 milestone needs portrait support.
 
-`TODO(device): the iPhone model and iOS version used for the Task 5 hardware
-confirmation are not yet recorded` — see `docs/IOS-BUILD.md`'s Task 5 section for the
-exact placeholder. Do not assume which models or iOS versions this has run on beyond
-"at least one physical iPhone, model and OS version unrecorded."
+**Hardware confirmation: iPhone 13 Pro Max, iOS 26.6** — one device, one OS version.
+The build's `IPHONEOS_DEPLOYMENT_TARGET` is 13.0, inherited from Ren'Py's prototype and
+never tested anywhere near it: iOS 13 is a *declared* minimum, not a verified one. Do not
+state it as though it were measured, and do not assume any other model or OS version
+works until one does.
 
 **Known constraint, unchanged:** ~22 MB leaked per game switch, native, inside Ren'Py's
 C/GL/SDL layer. Decided mitigation: watch and warn. Spec §14. Milestone B did **not**

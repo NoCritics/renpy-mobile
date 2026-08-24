@@ -55,10 +55,17 @@ echo "OK: base/main.py is ours (contains NoGameDirectory)"
 # seven modules printed all-green while __init__.py and harness.py were unchecked (see
 # docs/IOS-BUILD.md's Task 4 fix round). Deriving from shell/vnshell/*.py means adding a
 # module there (e.g. importer.py in Milestone C) is automatically covered here too.
+#
+# Read the list with find, not a *.py glob. An unmatched glob is NOT removed by default --
+# bash passes the pattern through literally -- so a glob-built array always holds at least
+# one element and any "is it empty?" test on it can never fire. That is a check that
+# cannot fail, which is the precise defect class this project has been bitten by four
+# times. find yields zero lines for an empty directory, so the check below is real.
 MODULES=()
-for f in "$ROOT"/shell/vnshell/*.py; do
+while IFS= read -r f; do
     MODULES+=("$(basename "$f")")
-done
+done < <(find "$ROOT/shell/vnshell" -maxdepth 1 -type f -name '*.py' | sort)
+
 [ "${#MODULES[@]}" -gt 0 ] || {
     echo "ASSERT FAILED: no *.py files found under $ROOT/shell/vnshell -- source of truth for the module list is empty or missing" >&2
     exit 1

@@ -14,10 +14,11 @@ result today — see step 8.
 You need:
 
 - A Windows PC with a USB cable that can both charge and sync your iPhone.
-- An iPhone. The build's deployment target is iOS 13, and it has been confirmed working
-  on one physical device (model and exact iOS version not yet recorded here). Other iOS
-  13+ versions are expected to work but have not been individually tested. iOS 16 and
-  later need one extra step (step 4).
+- An iPhone. Confirmed working on an **iPhone 13 Pro Max running iOS 26.6**. The build's
+  deployment target is iOS 13, so older devices should work in principle — but that floor
+  is inherited from Ren'Py and has never been tested, so treat anything other than the
+  device above as untried rather than supported. iOS 16 and later need one extra step
+  (step 4).
 - A free Apple ID (the same kind you'd use for the App Store). If you don't want to use
   your main one, any free Apple ID works — this does not require a paid Apple Developer
   Program membership.

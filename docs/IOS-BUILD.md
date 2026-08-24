@@ -970,11 +970,19 @@ uncompressed-content growth instead. Entry count held at **1,432 files** both ti
 Installed via Sideloadly on a physical iPhone by the project owner, 2026-08-24. Developer
 mode enabled, developer certificate trusted. **The app launches and runs our shell layer.**
 
-`TODO(device): model and iOS version not yet recorded — required before this claims
-which iOS versions are proven.` The install plan called for capturing both; neither was
-supplied by the time this task closed. Nothing in this document should be read as
-implying a specific device model or iOS version — only that at least one physical
-iPhone, of unrecorded model and OS version, ran this build successfully.
+**Device: iPhone 13 Pro Max, iOS 26.6.** Supplied by the owner after the task closed.
+
+Two things worth drawing out of that pairing:
+
+- **The deployment target is `IPHONEOS_DEPLOYMENT_TARGET = 13.0` and it ran on iOS 26.6** —
+  thirteen major versions above the floor. The floor is inherited unmodified from Ren'Py's
+  prototype and nothing here has tested anything near it. **iOS 13 is a declared minimum,
+  not a verified one.** Do not repeat it as though it were measured.
+- **The device identifier independently corroborates the model.** The UDID prefix observed
+  over USB is `00008110`, which is the A15 Bionic — the iPhone 13 family. That is a
+  cross-check from a different source than the owner's report, not a restatement of it.
+
+One device, one OS version. Every other model/version combination remains untested.
 
 Evidence is a screenshot of the running app (1280x591), kept at
 `logs/photo_2026-08-24_21-26-45.jpg`. Everything below is transcribed from that screen —
