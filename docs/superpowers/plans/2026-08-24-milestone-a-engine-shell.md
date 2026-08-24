@@ -1537,6 +1537,8 @@ def _rss_bytes() -> int:
     """
 
     if sys.platform == "win32":
+        import ctypes.wintypes as wintypes
+
         class Counters(ctypes.Structure):
             _fields_ = [
                 ("cb", ctypes.c_uint32),
@@ -1551,20 +1553,46 @@ def _rss_bytes() -> int:
                 ("PeakPagefileUsage", ctypes.c_size_t),
             ]
 
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+
+        # Declaring these is not optional. GetCurrentProcess returns a HANDLE, but
+        # ctypes defaults restype to c_int, which truncates the 64-bit pseudo-handle
+        # and makes the call fail silently — returning 0 rather than an error.
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.GetCurrentProcess.argtypes = []
+
+        # K32GetProcessMemoryInfo lives in kernel32 on Vista+ and avoids the psapi
+        # forwarder entirely; fall back for anything that lacks it.
+        try:
+            get_info = kernel32.K32GetProcessMemoryInfo
+        except AttributeError:
+            get_info = ctypes.windll.psapi.GetProcessMemoryInfo  # type: ignore[attr-defined]
+
+        get_info.argtypes = [wintypes.HANDLE, ctypes.POINTER(Counters), ctypes.c_uint32]
+        get_info.restype = wintypes.BOOL
+
         counters = Counters()
         counters.cb = ctypes.sizeof(Counters)
-        handle = ctypes.windll.kernel32.GetCurrentProcess()  # type: ignore[attr-defined]
-        ok = ctypes.windll.psapi.GetProcessMemoryInfo(  # type: ignore[attr-defined]
-            handle, ctypes.byref(counters), counters.cb
-        )
-        return int(counters.WorkingSetSize) if ok else 0
+
+        if not get_info(kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb):
+            return 0
+
+        return int(counters.WorkingSetSize)
 
     try:
         import resource
 
-        return int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) * 1024
+        maxrss = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
     except Exception:
         return 0
+
+    # ru_maxrss is bytes on macOS/iOS and kilobytes on Linux. Getting this wrong
+    # inflates or deflates every reading by 1024x, which would make the growth
+    # threshold meaningless rather than merely wrong.
+    if sys.platform == "darwin" or sys.platform == "ios":
+        return maxrss
+
+    return maxrss * 1024
 
 
 def _record_rss(cycle: int) -> None:
@@ -1697,7 +1725,16 @@ def main() -> None:
 
     rss = load("rss.jsonl")
     measured = [r["rss_bytes"] for r in rss if r["rss_bytes"] > 0]
-    if len(measured) >= 4:
+
+    if not measured:
+        # Never report PASS on an unmeasured memory check. Memory growth is the one
+        # failure that survives to iOS as a Jetsam kill, so "we could not measure it"
+        # must look like a failure, not like success.
+        failures.append(
+            f"memory was never measured — all {len(rss)} samples read 0 bytes. "
+            "The RSS probe is broken; fix it before trusting this run."
+        )
+    elif len(measured) >= 4:
         first, last = measured[1], measured[-1]
         if last > first * RSS_GROWTH_LIMIT:
             failures.append(
