@@ -26,6 +26,33 @@ for required in main.c Log.m VideoPlayer.m IAPHelper.m Info.plist base prebuilt/
     [ -e "$PROJDIR/$required" ] || { echo "ASSERT FAILED: $PROJDIR/$required is missing" >&2; exit 1; }
 done
 
+# The Swift function's return codes and the ObjC switch that names them live in two
+# files with nothing to hold them together -- no shared header, no compiler check. If
+# they drift, the device log confidently prints the wrong reason, which is worse than
+# printing none: we would chase "no window scene" while the real return was -3.
+#
+# This check extracts both sets and compares them. It also asserts each extraction
+# found something first, because a regex that silently matches nothing would make this
+# pass over any pair of files at all, including two empty ones.
+SWIFT_CODES="$(awk '/_cdecl\("vnspike_install_overlay"\)/{on=1} on{print} on&&/^}$/{exit}' "$ROOT/spike/Sources/SpikeOverlay.swift" | grep -oE 'return -?[0-9]+' | grep -oE '[-]?[0-9]+' | sort -n -u)"
+OBJC_CODES="$(grep -oE 'case -?[0-9]+:' "$ROOT/spike/Sources/VNSpikeBootstrap.m" | grep -oE '[-]?[0-9]+' | sort -n -u)"
+
+SWIFT_N="$(echo "$SWIFT_CODES" | grep -c . || true)"
+OBJC_N="$(echo "$OBJC_CODES" | grep -c . || true)"
+if [ "$SWIFT_N" -lt 2 ] || [ "$OBJC_N" -lt 2 ]; then
+    echo "ASSERT FAILED: return-code extraction found $SWIFT_N Swift / $OBJC_N ObjC codes;" >&2
+    echo "expected several of each. The check cannot mean anything in this state." >&2
+    exit 1
+fi
+
+if [ "$SWIFT_CODES" != "$OBJC_CODES" ]; then
+    echo "ASSERT FAILED: install_overlay return codes and the bootstrap switch disagree." >&2
+    echo "  Swift returns: $(echo $SWIFT_CODES)" >&2
+    echo "  ObjC handles:  $(echo $OBJC_CODES)" >&2
+    exit 1
+fi
+echo "OK: install_overlay return codes match the bootstrap switch: $(echo $SWIFT_CODES)"
+
 # Ren'Py's generated project is what we are replacing. Remove it so a stale one cannot
 # be built by accident if xcodegen fails.
 rm -rf "$PROJDIR"/*.xcodeproj

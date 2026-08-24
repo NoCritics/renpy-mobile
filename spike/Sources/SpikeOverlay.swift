@@ -5,9 +5,14 @@
 // embed SwiftUI inside SDL's view controller, but to put a second, transparent UIWindow
 // on the same UIWindowScene at a higher windowLevel.
 //
-// Installation is driven from PYTHON via ctypes rather than from a C constructor, which
-// kills two birds: it proves the ctypes path works, and it guarantees the overlay is
-// created after SDL's window exists rather than racing it.
+// Installation is driven natively, from VNSpikeBootstrap.m's +load, which registers for
+// UIApplicationDidBecomeActiveNotification and installs on the first activation.
+//
+// It used to be driven from Python via ctypes. The device disproved that: ctypes.CDLL(None)
+// resolves NO symbol in this binary -- verified with a control, since even Py_Initialize,
+// which must be present, came back unresolvable. Waiting for the activation notification
+// preserves the one property the Python route had for free: the overlay is created after
+// SDL's window exists rather than racing it.
 
 import UIKit
 import SwiftUI
@@ -32,42 +37,51 @@ struct SpikeOverlayView: View {
     @State private var posted = 0
 
     var body: some View {
-        VStack {
-            HStack {
-                Spacer()
-                VStack(spacing: 8) {
-                    Text("Swift overlay")
-                        .font(.caption).bold()
-                        .foregroundColor(.white)
-
-                    Button("send to Python") {
-                        // No native bridge: append a JSON line to a file in Documents,
-                        // which Python's existing FileTransport (Milestone A, already
-                        // tested) drains. Needs no symbols, headers, or linkage.
-                        if spikeWriteCommand(["command": "hello", "n": posted + 1]) {
-                            posted += 1
-                        }
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(Color.blue.opacity(0.85))
+        // Dead centre, opaque, loud, and deliberately ignoring safe areas.
+        //
+        // The previous version pinned this to the top-right behind a 24pt inset and the
+        // owner could not see it at all. That is NOT by itself evidence the overlay
+        // failed to install: the Ren'Py diagnostic text is also clipped at the top and
+        // edges on this device, so whatever crops the engine's output would crop a
+        // corner-anchored button too. Centre is the one position that survives an
+        // unexpected inset, a rotation, and a scale mismatch at the same time.
+        ZStack {
+            VStack(spacing: 16) {
+                Text("SWIFT OVERLAY")
+                    .font(.system(size: 28, weight: .heavy))
                     .foregroundColor(.white)
-                    .cornerRadius(8)
 
-                    Text("posted: \(posted)")
-                        .font(.caption)
-                        .foregroundColor(.white)
+                Button("SEND TO PYTHON") {
+                    // No native bridge: append a JSON line to a file in Documents,
+                    // which Python's existing FileTransport (Milestone A, already
+                    // tested) drains. Needs no symbols, headers, or linkage.
+                    if spikeWriteCommand(["command": "hello", "n": posted + 1]) {
+                        posted += 1
+                    }
                 }
-                .padding(12)
-                .background(Color.black.opacity(0.55))
+                .font(.system(size: 24, weight: .bold))
+                .padding(.horizontal, 32)
+                .padding(.vertical, 20)
+                .background(Color.blue)
+                .foregroundColor(.white)
                 .cornerRadius(12)
-                .padding(.trailing, 24)
-                .padding(.top, 24)
+
+                Text("posted: \(posted)")
+                    .font(.system(size: 22))
+                    .foregroundColor(.white)
             }
-            Spacer()
+            .padding(32)
+            // Fully opaque, and a colour nothing in the shell project uses. If any part
+            // of this reaches the screen it is unmistakable, and it cannot be confused
+            // with a Ren'Py frame the way a translucent black panel could be.
+            .background(Color.red)
+            .cornerRadius(16)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .ignoresSafeArea()
     }
 }
+
 
 // Held strongly: a UIWindow with no strong reference is released and silently vanishes.
 private var spikeOverlayWindow: UIWindow?
@@ -97,6 +111,11 @@ public func vnspike_install_overlay() -> Int32 {
     let host = PassthroughHostingController(rootView: SpikeOverlayView())
     host.view.backgroundColor = .clear
     window.rootViewController = host
+
+    // A window that installs successfully but has no area is indistinguishable, from
+    // the outside, from one that never installed: both show nothing. Give that case
+    // its own return code so the log can tell them apart.
+    if window.frame.isEmpty { return -3 }
 
     // Deliberately NOT makeKeyAndVisible: taking key status away from SDL's window is a
     // plausible way to break its input handling.
