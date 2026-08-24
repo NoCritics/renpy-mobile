@@ -18,6 +18,8 @@ jobs:
           xcodebuild -version
           xcode-select -p
           ls /Applications | grep -i xcode || true
+          xcrun --sdk iphoneos --show-sdk-version
+          xcodebuild -showsdks | grep -i ios || true
 
       - name: Cache Ren'Py downloads
         uses: actions/cache@v4
