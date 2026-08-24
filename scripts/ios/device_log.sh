@@ -9,6 +9,7 @@
 # Usage:
 #   bash scripts/ios/device_log.sh            # stream until Ctrl-C
 #   bash scripts/ios/device_log.sh 30         # capture for 30 seconds, then stop
+#   bash scripts/ios/device_log.sh 30 --legacy  # ...via the plain-text legacy relay
 #
 # Works from Git Bash, WSL, or MSYS. Requires libimobiledevice for Windows and Apple's
 # Mobile Device Support (ships with iTunes). The phone must be unlocked and paired.
@@ -17,6 +18,26 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LOGS="$ROOT/logs"
 SECONDS_TO_CAPTURE="${1:-}"
+
+# Which relay service to read the log through.
+#
+# The default (os_trace_relay) gives richer, structured output and decodes system
+# frameworks well, but it renders THIS app's messages as "<decode: missing data>" -- it is
+# not delivering the string payload for a third-party binary's own os_log entries.
+#
+# The legacy syslog_relay service carries plain text instead, which is what NSLog also
+# writes. If our lines come through as "<decode: missing data>", capture again with:
+#
+#     bash scripts/ios/device_log.sh 30 --legacy
+#
+# Neither mode is strictly better: legacy loses subsystem tagging and sub-second
+# timestamps, so keep the default for iOS-level events like jetsam kills.
+RELAY_ARGS=""
+RELAY_NAME="os_trace_relay (default)"
+if [ "${2:-}" = "--legacy" ] || [ -n "${VNPLAYER_LEGACY_RELAY:-}" ]; then
+    RELAY_ARGS="--syslog-relay"
+    RELAY_NAME="syslog_relay (legacy, plain text)"
+fi
 
 # Are we under WSL? A Windows .exe still runs here via interop, but any path we hand it
 # has to be a Windows path, because the .exe cannot read /mnt/c/... spellings.
@@ -82,10 +103,11 @@ summarize_capture() {
 
     echo
     echo "=== Ren'Py's own output (NSLog via renios prototype/Log.m) ==="
-    echo "NOTE: iOS redacts NSLog arguments as <private> unless private-data logging is"
-    echo "      enabled on the device. Lines below appearing as <private> ARE Ren'Py's"
-    echo "      log; the device is hiding the text, not failing to emit it."
-    grep -m 20 -E "^[A-Za-z]{3} [0-9]{2} [0-9:.]+ VNPlayer\[[0-9]+\]" "$out" || echo "(none)"
+    echo "NOTE: if these read <decode: missing data>, the lines ARE Ren'Py's log but the"
+    echo "      default relay is not delivering the string payload. Re-capture with"
+    echo "      --legacy to read them as plain text. <private> instead means the device"
+    echo "      is redacting, which the %{public}s patch in enable_public_log.sh fixes."
+    grep -m 20 -E "^[A-Za-z]{3} +[0-9]+ [0-9:.]+ VNPlayer\[[0-9]+\]" "$out" || echo "(none)"
 
     echo
     echo "=== sandbox denials (what the app tried to do and could not) ==="
@@ -109,12 +131,13 @@ else
 fi
 
 echo "Writing to $OUT"
+echo "Relay: $RELAY_NAME"
 echo "Launch VNPlayer on the phone now; its output appears here."
 
 if [ -n "$SECONDS_TO_CAPTURE" ]; then
     echo "Capturing for ${SECONDS_TO_CAPTURE}s..."
     # idevicesyslog exits non-zero when timeout kills it; that is the normal path here.
-    timeout "$SECONDS_TO_CAPTURE" "$SYSLOG" --no-colors -o "$OUT_ARG" || true
+    timeout "$SECONDS_TO_CAPTURE" "$SYSLOG" --no-colors $RELAY_ARGS -o "$OUT_ARG" || true
 
     if [ ! -s "$OUT" ]; then
         echo "Capture produced nothing. The relay may not have connected." >&2
@@ -125,5 +148,5 @@ if [ -n "$SECONDS_TO_CAPTURE" ]; then
     summarize_capture "$OUT"
 else
     echo "Streaming until Ctrl-C..."
-    "$SYSLOG" --no-colors -o "$OUT_ARG"
+    "$SYSLOG" --no-colors $RELAY_ARGS -o "$OUT_ARG"
 fi
