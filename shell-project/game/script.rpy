@@ -70,34 +70,40 @@ init python:
         except Exception as e:
             lines.append("vnshell: FAILED (%s: %s)" % (type(e).__name__, e))
 
-        # --- SPIKE: can Python reach C symbols linked into the main executable? ---
-        # This is the question the whole spike turns on. ctypes.CDLL(None) loads the
-        # running image; if -dead_strip removed our symbols, or ctypes is unavailable,
-        # this is where we find out -- with the actual exception, not a black screen.
+        # --- SPIKE: WHICH symbols can dlsym actually find? ---
+        # Py_Initialize is the control: it comes from the statically linked libpython
+        # and must be present. If the control fails, the whole probe is meaningless --
+        # that is the check that makes this an instrument rather than a guess.
+        store.vnspike_lib = None
         try:
             import ctypes
             lib = ctypes.CDLL(None)
-            ping = lib.vnbridge_ping
-            ping.restype = ctypes.c_int
-            got = ping()
-            lines.append("bridge ping: 0x%04X (want 0x5643) %s"
-                         % (got, "OK" if got == 0x5643 else "MISMATCH"))
-            store.vnspike_lib = lib
+            for label, name in (("control Py_Initialize", "Py_Initialize"),
+                                ("swift @_cdecl", "vnspike_ping"),
+                                ("plain C", "vnbridge_ping")):
+                try:
+                    fn = getattr(lib, name)
+                    fn.restype = ctypes.c_int
+                    if name == "Py_Initialize":
+                        lines.append("%s: FOUND (not called)" % label)
+                    else:
+                        lines.append("%s %s: FOUND -> 0x%04X" % (label, name, fn()))
+                        store.vnspike_lib = lib
+                except Exception as e:
+                    lines.append("%s %s: %s" % (label, name, type(e).__name__))
         except Exception as e:
-            lines.append("bridge ping: FAILED (%s: %s)" % (type(e).__name__, e))
-            store.vnspike_lib = None
+            lines.append("ctypes unavailable: %s: %s" % (type(e).__name__, e))
 
-        # --- SPIKE: can Python install a SwiftUI overlay over SDL's window? ---
+        # --- SPIKE: overlay, if any export seam worked ---
         if store.vnspike_lib is not None:
             try:
                 install = store.vnspike_lib.vnspike_install_overlay
                 install.restype = ctypes.c_int
                 rc = install()
-                meaning = {1: "installed", 2: "already installed",
-                           -1: "not main thread", -2: "no UIWindowScene"}
-                lines.append("swift overlay: rc=%d (%s)" % (rc, meaning.get(rc, "unknown")))
+                meaning = {1: "installed", 2: "already", -1: "not main thread", -2: "no scene"}
+                lines.append("swift overlay: rc=%d (%s)" % (rc, meaning.get(rc, "?")))
             except Exception as e:
-                lines.append("swift overlay: FAILED (%s: %s)" % (type(e).__name__, e))
+                lines.append("swift overlay: %s: %s" % (type(e).__name__, e))
 
         return lines
 

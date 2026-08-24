@@ -103,3 +103,28 @@ public func vnspike_install_overlay() -> Int32 {
     spikeOverlayWindow = window
     return 1
 }
+
+
+// SPIKE PROBE: Swift @_cdecl wrappers around the C mailbox.
+//
+// Device evidence: ctypes.CDLL(None) could not find the plain C symbols
+// ("dlsym(RTLD_DEFAULT, vnbridge_ping): symbol not found"), even with
+// -Wl,-export_dynamic. But `vnspike_install_overlay` -- a Swift @_cdecl symbol --
+// did survive into the binary. If dlsym can find these wrappers, then the export seam
+// for this project is Swift @_cdecl, not C, and the eventual bridge should be written
+// accordingly.
+
+@_cdecl("vnspike_ping")
+public func vnspike_ping() -> Int32 {
+    return Int32(vnbridge_ping())
+}
+
+@_cdecl("vnspike_post")
+public func vnspike_post(_ command: Int32) -> Int32 {
+    return Int32(vnbridge_post(command, "from swift wrapper"))
+}
+
+@_cdecl("vnspike_poll_count")
+public func vnspike_poll_count() -> Int32 {
+    return vnbridge_post_count()
+}
