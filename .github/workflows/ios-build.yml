@@ -1,0 +1,259 @@
+name: iOS build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, milestone-b]
+    tags: ['v*']
+
+jobs:
+  discover:
+    runs-on: macos-15
+    timeout-minutes: 90
+    # write is needed only for the tag-triggered "Attach to release" step, which uses
+    # the automatic per-run GITHUB_TOKEN -- not a configured secret, so this is safe on
+    # any fork. Every other step only reads the checkout.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Record toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          xcode-select -p
+          ls /Applications | grep -i xcode || true
+          xcrun --sdk iphoneos --show-sdk-version
+          xcodebuild -showsdks | grep -i ios || true
+
+      - name: Cache Ren'Py downloads
+        uses: actions/cache@v4
+        with:
+          path: vendor/*.zip
+          key: renpy-8.5.3-archives
+
+      - name: Fetch dependencies
+        run: bash scripts/ios/fetch_ios_deps.sh
+
+      - name: Generate Xcode project
+        run: bash scripts/ios/generate_xcode.sh
+
+      - name: Assert pre-overlay base/main.py is Ren'Py's, not ours
+        run: |
+          set -euo pipefail
+          BASE="$(find build/xcode -maxdepth 2 -type d -name base | head -1)"
+          [ -n "$BASE" ] || { echo "ASSERT FAILED: no base/ under build/xcode" >&2; exit 1; }
+          MAIN_PY="$BASE/main.py"
+          [ -f "$MAIN_PY" ] || { echo "ASSERT FAILED: $MAIN_PY does not exist before the overlay has run" >&2; exit 1; }
+
+          SIZE="$(stat -f%z "$MAIN_PY" 2>/dev/null || stat -c%s "$MAIN_PY")"
+          echo "Pre-overlay $MAIN_PY is $SIZE bytes (Ren'Py's own ios_populate output, not yet overlaid)."
+
+          # This is the other half of the discrimination claim in "Overlay shell layer"
+          # and "Verify shell layer is in the .ipa": both assert NoGameDirectory IS
+          # present after the overlay because it is absent from Ren'Py's own generated
+          # main.py. That absence was previously confirmed only by reading
+          # vendor/renpy-8.5.3-sdk/renpy.py's source directly, never by inspecting the
+          # actual file CI generates -- because the overlay used to run immediately
+          # after generation, nothing ever captured its pre-overlay content. Assert it
+          # here, before the overlay runs, so the claim is a logged fact on every build,
+          # not an inference -- and so a future Ren'Py release that starts generating a
+          # main.py containing our marker string would be caught here, loudly, instead
+          # of silently destroying the guard's ability to discriminate downstream.
+          if grep -q "NoGameDirectory" "$MAIN_PY"; then
+            echo "ASSERT FAILED: pre-overlay $MAIN_PY already contains 'NoGameDirectory' -- the marker used to distinguish our main.py from Ren'Py's no longer discriminates; the downstream overlay/.ipa guards must be revisited" >&2
+            exit 1
+          fi
+          echo "OK: pre-overlay $MAIN_PY does not contain NoGameDirectory -- confirmed on THIS build, not inferred from source alone. NoGameDirectory remains a valid marker for 'this is ours, not Ren'Py's'."
+
+      - name: Overlay shell layer
+        run: bash scripts/ios/overlay_shell.sh
+
+      # Pre-alpha only: makes this app's log readable in Console.app on a Mac (changes
+      # redaction, not deliverability -- it does NOT fix reading the log over the USB
+      # relay this project's device_log.sh actually uses; see the script header and
+      # docs/IOS-BUILD.md for the measured result). Revisit before any wider release.
+      - name: Make Ren'Py's log readable on device
+        run: bash scripts/ios/enable_public_log.sh
+
+      - name: Inspect generated project
+        run: |
+          set -euo pipefail
+          find build/xcode -maxdepth 3 | sort | sed -n '1,60p'
+          echo "=== base/ contents ==="
+          ls -la build/xcode/*/base | sed -n '1,30p'
+          echo "=== is our game in base/? ==="
+          ls -la build/xcode/*/base/game | sed -n '1,20p'
+          echo "=== schemes ==="
+          xcodebuild -list -project build/xcode/*/*.xcodeproj
+          echo "=== bundle id / product name (record, do not fix here) ==="
+          grep -h "PRODUCT_BUNDLE_IDENTIFIER\|PRODUCT_NAME" build/xcode/*/*.xcodeproj/project.pbxproj | sort -u
+
+          # The listings above are useful log output, but they are not what
+          # fails this job on their own -- a later edit to this file could
+          # add "|| true", redirect stderr, or otherwise silently defeat the
+          # implicit fail-closed behavior. Make the pass/fail condition
+          # explicit instead of relying on ls/find's own exit codes.
+          echo "=== explicit assertions ==="
+          PROJDIR="$(find build/xcode -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          test -n "$PROJDIR" || { echo "ASSERT FAILED: no project directory under build/xcode" >&2; exit 1; }
+          test -d "$PROJDIR/base" || { echo "ASSERT FAILED: $PROJDIR/base does not exist" >&2; exit 1; }
+          test -d "$PROJDIR/base/game" || { echo "ASSERT FAILED: $PROJDIR/base/game does not exist" >&2; exit 1; }
+          test -f "$PROJDIR/base/main.py" || { echo "ASSERT FAILED: $PROJDIR/base/main.py does not exist" >&2; exit 1; }
+          test -n "$(ls -A "$PROJDIR/base/game")" || { echo "ASSERT FAILED: $PROJDIR/base/game is empty" >&2; exit 1; }
+          echo "OK: base/, base/game/ (non-empty), and base/main.py all present under $PROJDIR"
+
+      - name: Inventory renios
+        run: |
+          RENIOS=vendor/renios
+          echo "=== top level ==="
+          ls -la "$RENIOS"
+          echo "=== depth 2 ==="
+          find "$RENIOS" -maxdepth 2 -type d | sort
+          echo "=== xcode projects ==="
+          find "$RENIOS" -name "*.xcodeproj" -maxdepth 3
+          echo "=== prebuilt libraries: release (full, sorted) ==="
+          find "$RENIOS/prototype/prebuilt/release" -name "*.a" | sort
+          echo "=== prebuilt libraries: release count ==="
+          find "$RENIOS/prototype/prebuilt/release" -name "*.a" | wc -l
+          echo "=== prebuilt libraries: debug (full, sorted) ==="
+          find "$RENIOS/prototype/prebuilt/debug" -name "*.a" | sort
+          echo "=== prebuilt libraries: debug count ==="
+          find "$RENIOS/prototype/prebuilt/debug" -name "*.a" | wc -l
+          echo "=== library count and total size ==="
+          find "$RENIOS" -name "*.a" | wc -l
+          du -sh "$RENIOS"
+          echo "=== does base/ ship, or is it generated? ==="
+          ls -la "$RENIOS"/prototype/base 2>&1 || echo "no prototype/base — generated by ios_populate"
+          echo "=== Info.plist ==="
+          find "$RENIOS" -name "Info.plist" -maxdepth 3 -exec cat {} \;
+          echo "=== schemes in the prototype project ==="
+          find "$RENIOS" -name "*.xcodeproj" -maxdepth 3 -exec xcodebuild -list -project {} \; 2>&1 || true
+
+      - name: Upload inventory
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: renios-inventory
+          path: |
+            vendor/renios/**/Info.plist
+            vendor/renios/**/*.pbxproj
+          if-no-files-found: warn
+
+      - name: Package unsigned .ipa
+        run: bash scripts/ios/package_ipa.sh
+
+      - name: Verify shell layer is in the .ipa
+        run: |
+          set -euo pipefail
+          IPA="build/VNPlayer.ipa"
+
+          # Check the .ipa itself exists before grepping into it -- a missing .ipa and
+          # a .ipa that exists but lacks our files are different failures, and this
+          # script must not conflate them under one misleading "shell layer missing"
+          # message the way a bare `unzip -l ... | grep ... || fail` would if unzip
+          # itself failed (e.g. because $IPA does not exist).
+          [ -f "$IPA" ] || { echo "ASSERT FAILED: $IPA does not exist" >&2; exit 1; }
+
+          LISTING="$(unzip -l "$IPA")"
+
+          echo "=== vnshell/ modules present in $IPA ==="
+          # Derive the expected module list from shell/vnshell/ (the source of truth)
+          # instead of hardcoding it here. A hardcoded list silently stops covering new
+          # modules as vnshell/ grows -- exactly what happened once already this
+          # milestone, when a guard watching five of seven modules printed all-green
+          # while __init__.py and harness.py went unchecked (see docs/IOS-BUILD.md's
+          # Task 4 fix round). This reads the actual filenames checked out from the repo,
+          # so a new module (e.g. importer.py in Milestone C) is covered automatically.
+          MODULES=()
+          for f in shell/vnshell/*.py; do
+            MODULES+=("$(basename "$f" .py)")
+          done
+          if [ "${#MODULES[@]}" -eq 0 ]; then
+            echo "ASSERT FAILED: no *.py files found under shell/vnshell/ -- source of truth for the module list is empty or missing" >&2
+            exit 1
+          fi
+          for f in "${MODULES[@]}"; do
+            MATCH="$(printf '%s\n' "$LISTING" | grep -E "vnshell/${f}\.py" || true)"
+            if [ -z "$MATCH" ]; then
+              echo "ASSERT FAILED: vnshell/${f}.py not found in $IPA -- shell layer incomplete" >&2
+              exit 1
+            fi
+            echo "$MATCH"
+          done
+
+          # vnshell/ alone is not proof: an .ipa could carry our vnshell/ beside Ren'Py's
+          # own generated main.py and still boot stock Ren'Py, since main.py is the file
+          # Ren'Py actually executes. Locate base/main.py inside the archive and check
+          # its content, not merely its presence.
+          echo "=== locating base/main.py inside $IPA ==="
+          MAIN_PY_ENTRY="$(printf '%s\n' "$LISTING" | grep -oE '[^[:space:]]+\.app/base/main\.py$' | head -1 || true)"
+          if [ -z "$MAIN_PY_ENTRY" ]; then
+            echo "ASSERT FAILED: no .app/base/main.py entry found in $IPA" >&2
+            exit 1
+          fi
+          echo "Found: $MAIN_PY_ENTRY"
+
+          # NoGameDirectory is the discriminating marker confirmed (see
+          # scripts/ios/overlay_shell.sh and docs/IOS-BUILD.md) to be present only in
+          # our shell/main.py and absent from Ren'Py's own generated main.py -- the
+          # path_to_* function names are NOT a valid marker, since Ren'Py's own
+          # renpy.py (the file it copies into base/main.py) defines functions of the
+          # same names.
+          MAIN_PY_TMP="$(mktemp)"
+          unzip -p "$IPA" "$MAIN_PY_ENTRY" > "$MAIN_PY_TMP"
+          if grep -q "NoGameDirectory" "$MAIN_PY_TMP"; then
+            echo "OK: $MAIN_PY_ENTRY contains NoGameDirectory -- this is our main.py"
+          else
+            echo "ASSERT FAILED: $MAIN_PY_ENTRY in $IPA does not contain 'NoGameDirectory' -- this is Ren'Py's stock launcher, not ours" >&2
+            rm -f "$MAIN_PY_TMP"
+            exit 1
+          fi
+          rm -f "$MAIN_PY_TMP"
+
+          # overlay_shell.sh prunes __pycache__/*.pyc after copying shell/vnshell/, but
+          # that was previously confirmed only by a manual one-off check on a downloaded
+          # artifact -- never wired in as a gate that runs on every build. Assert it here
+          # so a regression (e.g. someone reordering the prune before the copy, or
+          # removing it) fails the build instead of silently shipping mismatched
+          # bytecode.
+          #
+          # Scoped to base/vnshell/ specifically, not the whole .ipa: Ren'Py's own
+          # stdlib under base/lib/python3.12/ legitimately ships precompiled *.pyc
+          # files (confirmed by this exact assertion failing loudly against them on
+          # the first attempt at this check, unscoped -- a real example of the guard
+          # doing its job and catching an overbroad condition before it shipped). Our
+          # exclusion requirement only ever applied to shell/vnshell/'s own cache.
+          echo "=== confirming no __pycache__/*.pyc reached $IPA under vnshell/ ==="
+          PYCACHE_MATCHES="$(printf '%s\n' "$LISTING" | grep "vnshell/" | grep -E "__pycache__|\.pyc$" || true)"
+          if [ -n "$PYCACHE_MATCHES" ]; then
+            echo "ASSERT FAILED: __pycache__/*.pyc found under vnshell/ in $IPA -- the overlay's prune step did not run or did not work:" >&2
+            echo "$PYCACHE_MATCHES" >&2
+            exit 1
+          fi
+          echo "OK: no __pycache__/*.pyc under vnshell/ anywhere in $IPA"
+
+          echo "=== shell layer verified in $IPA ==="
+
+      - name: Upload .ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: VNPlayer-ipa
+          path: build/VNPlayer.ipa
+          if-no-files-found: error
+
+      # Only fires on a tag push (e.g. v0.1.0), never on a branch push or
+      # workflow_dispatch. Uses the automatic, per-run GITHUB_TOKEN that Actions
+      # provisions for every workflow -- not a repository secret anyone has to
+      # configure, so this step works identically on any fork. No certificate,
+      # provisioning profile, or App Store Connect key is involved: the .ipa
+      # attached here is the same unsigned artifact Sideloadly signs locally.
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/VNPlayer.ipa
+          body: |
+            Unsigned build. Install with Sideloadly using your own free Apple ID --
+            see docs/INSTALL.md. No Apple Developer Program membership required.
