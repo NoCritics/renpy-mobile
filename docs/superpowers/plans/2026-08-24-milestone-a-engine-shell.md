@@ -1352,12 +1352,16 @@ init python:
         record = {
             "game": game,
             "sentinel_value": sentinel.VALUE,
-            # Deliberately NOT style.default.font. Ren'Py's own 00style.rpy:139 sets
-            # font "DejaVuSans.ttf" as the engine-wide default for every game, so a
-            # font-based canary reports "bleed" even on a perfectly clean reset —
-            # it cannot tell contamination from the baseline. Text size can: the
-            # engine default is 22 (00style.rpy:142) and game A sets 137.
-            "default_size": int(style.default.size),
+            # Per-game init state, declared in each game's own options.rpy. If game B
+            # ever reads "Sentinel A", init-time state survived the switch.
+            #
+            # Two earlier canary designs failed here and are worth not repeating.
+            # style.default.font matched Ren'Py's own engine-wide default
+            # (00style.rpy:139), so it reported bleed even on a clean reset.
+            # style.default.size was set but never read back, because mutating a style
+            # outside an init block requires style.rebuild() to take effect. config.name
+            # needs no such ceremony: each game already declares its own.
+            "config_name": str(renpy.config.name),
             "saves_dir": renpy.__main__.path_to_saves(gamedir),
             "leaked_store_var": getattr(store, "game_a_marker", None),
         }
@@ -1368,10 +1372,6 @@ init python:
                 f.write(json.dumps(record) + "\n")
 
 label start:
-    # Set the style marker BEFORE observing, so game A's own record proves the canary
-    # actually took effect. If A ever reports 22, the instrument is broken and B's
-    # reading means nothing — check.py asserts this explicitly.
-    $ style.default.size = 137
     $ observe("A")
     $ game_a_marker = "leaked"
     scene expression "big.png"
@@ -1415,12 +1415,16 @@ init python:
         record = {
             "game": game,
             "sentinel_value": sentinel.VALUE,
-            # Deliberately NOT style.default.font. Ren'Py's own 00style.rpy:139 sets
-            # font "DejaVuSans.ttf" as the engine-wide default for every game, so a
-            # font-based canary reports "bleed" even on a perfectly clean reset —
-            # it cannot tell contamination from the baseline. Text size can: the
-            # engine default is 22 (00style.rpy:142) and game A sets 137.
-            "default_size": int(style.default.size),
+            # Per-game init state, declared in each game's own options.rpy. If game B
+            # ever reads "Sentinel A", init-time state survived the switch.
+            #
+            # Two earlier canary designs failed here and are worth not repeating.
+            # style.default.font matched Ren'Py's own engine-wide default
+            # (00style.rpy:139), so it reported bleed even on a clean reset.
+            # style.default.size was set but never read back, because mutating a style
+            # outside an init block requires style.rebuild() to take effect. config.name
+            # needs no such ceremony: each game already declares its own.
+            "config_name": str(renpy.config.name),
             "saves_dir": renpy.__main__.path_to_saves(gamedir),
             "leaked_store_var": getattr(store, "game_a_marker", None),
         }
@@ -1684,10 +1688,11 @@ import os
 import sys
 
 OUT = os.path.join(os.path.dirname(__file__), "out")
-# Ren'Py's engine-wide default, from renpy/common/00style.rpy:142. Game A overrides it
-# to GAME_A_TEXT_SIZE; a clean game B must read the default back.
-RENPY_DEFAULT_TEXT_SIZE = 22
-GAME_A_TEXT_SIZE = 137
+# Each game declares its own config.name in its options.rpy. This assertion is
+# self-validating: if game A stops reporting "Sentinel A", the instrument is broken and
+# game B's reading means nothing — which is exactly the failure mode that let two earlier
+# canary designs report meaningless verdicts.
+EXPECTED_CONFIG_NAME = {"A": "Sentinel A", "B": "Sentinel B"}
 
 RSS_GROWTH_LIMIT = 1.30  # last cycle may not exceed the first by more than 30%
 
@@ -1720,17 +1725,12 @@ def main() -> None:
                 f"expected {expected!r} — sys.modules contamination"
             )
 
-        if game == "A" and record["default_size"] != GAME_A_TEXT_SIZE:
+        expected_name = EXPECTED_CONFIG_NAME[game]
+        if record["config_name"] != expected_name:
             failures.append(
-                f"cycle {i}: game A reports text size {record['default_size']}, expected "
-                f"{GAME_A_TEXT_SIZE} — the style canary itself is broken, so any "
-                "style-bleed verdict below is meaningless"
-            )
-
-        if game == "B" and record["default_size"] != RENPY_DEFAULT_TEXT_SIZE:
-            failures.append(
-                f"cycle {i}: game B has text size {record['default_size']}, expected the "
-                f"engine default {RENPY_DEFAULT_TEXT_SIZE} — style bleed from game A"
+                f"cycle {i}: game {game} reports config.name "
+                f"{record['config_name']!r}, expected {expected_name!r} — per-game init "
+                "state survived the switch"
             )
 
         if game == "B" and record["leaked_store_var"] is not None:
