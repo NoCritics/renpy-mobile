@@ -4,6 +4,7 @@ vendor/
 .rig/
 harness/assets/
 harness/out/
+harness/games/*/game/big.png
 *.pyc
 __pycache__/
 .DS_Store
