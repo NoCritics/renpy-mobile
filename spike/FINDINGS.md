@@ -120,35 +120,45 @@ a row would have been wrong without one.
 
 # START HERE after compaction
 
-Branch `spike/swift-bridge`, pushed. Last build: run 32787707051. `main` is untouched at
+Branch `spike/swift-bridge`, pushed. Last build: run 32789146023 (commit `b2f0a98`). `main` is untouched at
 the Milestone B merge; nothing here has been merged.
 
-## Two immediate next steps, in order
+## Round 2 is built and pushed — what it discriminates
 
-**1. Move the button so it cannot be off-screen.** It is currently at
-`.padding(.trailing, 24)` in the top-right of `SpikeOverlayView`
-(`spike/Sources/SpikeOverlay.swift`). The owner reports no visible button — and notes the
-Ren'Py diagnostic text is *also* clipped at the top and edges in every screenshot, so the
-likeliest explanation is that the button is off-screen or under a safe-area inset, NOT
-that the overlay failed to install. Put it dead centre, make it large, give it an opaque
-background, and ignore safe areas. If it appears, window coexistence is proven and the
-remaining questions fall out immediately.
+Commit `b2f0a98` did both of the steps this section used to describe. The button is now
+dead centre, large, fully opaque, on a colour the shell project never uses, ignoring safe
+areas. The install result is now one argument-free literal per outcome, plus a new `-3`
+for a window that installs with an empty frame.
 
-**2. Make the install result visible.** `VNSpikeBootstrap.m` logs
-`NSLog(@"[vnspike] install_overlay rc=%d", rc)` and that line is **unreadable** over the
-USB relay — see the logging constraint below. Replace it with one argument-free literal
-per outcome:
+**The predictions, stated before the device run so they cannot be rationalised after it.**
+Read the log for the `[vnspike] overlay ...` line and the screen for the red panel:
 
-```objc
-if (rc == 1)       NSLog(@"[vnspike] overlay installed");
-else if (rc == 2)  NSLog(@"[vnspike] overlay already installed");
-else if (rc == -1) NSLog(@"[vnspike] overlay FAILED not main thread");
-else if (rc == -2) NSLog(@"[vnspike] overlay FAILED no window scene");
-else               NSLog(@"[vnspike] overlay FAILED unknown");
-```
+| Log line | Red panel | What it means | Next move |
+|---|---|---|---|
+| `overlay installed` | **visible** | SwiftUI and SDL coexist. The spike's central question is answered YES. | Tap it; confirm `from Swift: N received` climbs. That closes the loop end to end. |
+| `overlay installed` | **not visible** | The window installs with a real frame but never reaches the screen. Coexistence is the problem, not placement. | Raise `windowLevel` to `.alert + 1`; if that fails, host the SwiftUI view inside SDL's own view controller instead of a second window. |
+| `overlay FAILED zero-size window` | not visible | Installed against a scene with no bounds — a timing problem, not a layering one. | Install on the scene's first layout pass rather than on activation. |
+| `overlay FAILED no window scene` | not visible | `didBecomeActive` fires before SDL's scene exists. | Retry on the next runloop turn, or observe scene connection instead. |
+| `overlay FAILED not main thread` | not visible | The notification block is not on the main queue, contradicting `[NSOperationQueue mainQueue]`. | Would be genuinely surprising; investigate before assuming anything else. |
+| no `[vnspike] overlay` line at all | — | The notification never fired, or `+load` did not register. | Check `bootstrap registered` still decodes; if it does, the observer is the suspect. |
 
-Until that lands we do not know whether `vnspike_install_overlay` returned 1, -1 or -2,
-which is the difference between "installed but invisible" and "never installed".
+The point of the table is that **every outcome now names its own next move.** The previous
+round had two outcomes that looked identical from outside the device, which is why it
+produced no information.
+
+`windowLevel` was deliberately left at `.normal + 1` this round. Changing placement and
+layering together would make a visible button unattributable — and if it stays invisible,
+the table above already says layering is the next lever to pull.
+
+## iOS 13.0 is the API floor
+
+`spike/project.yml` sets `deploymentTarget: iOS "13.0"`, read out of renios' own prototype
+rather than chosen. Anything newer fails the build, not the device: `.ignoresSafeArea()`
+(iOS 14+) cost a full CI round-trip before `.edgesIgnoringSafeArea(.all)` replaced it.
+There is no local Swift toolchain on the authoring machine, so CI is the only compiler --
+prefer the older spelling when SwiftUI offers both.
+
+Raising the floor is a product decision (it drops devices), not a spike one.
 
 ## Device logging constraint (hard-won, applies to all of Milestone C)
 
@@ -174,10 +184,12 @@ Instrument accordingly: distinct literal strings per case, never formatted value
 | Does the SwiftUI overlay appear over SDL? | **UNKNOWN** — button not visible, but so is some Ren'Py text; see step 1 |
 | Does a Swift-written command reach Python? | **UNTESTED** — blocked on the button being tappable |
 
-## The methodological thread, six instances now
+## The methodological thread
 
 Every wrong turn tonight was an instrument that could not fail, or could not detect what it
-claimed to:
+claimed to — on top of the five review rounds in Milestone B that each closed a check with
+the same defect (a warn-not-fail bundle-ID gate, an existence-not-version Python guard, a
+5-of-7 module gate, an undemonstrated negative case, a vacuous emptiness test):
 
 1. String-grep over a stripped Mach-O "proved" C symbols were stripped. Control test
    (`SDL_CreateWindow`, `launcher_main` also "missing") showed it measured nothing.

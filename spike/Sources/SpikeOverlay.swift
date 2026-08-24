@@ -78,7 +78,12 @@ struct SpikeOverlayView: View {
             .cornerRadius(16)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .ignoresSafeArea()
+        // edgesIgnoringSafeArea, not ignoresSafeArea: the deployment target is iOS 13.0,
+        // taken from renios' own prototype, and ignoresSafeArea is iOS 14+. Everything
+        // in this file must stay within the iOS 13 SwiftUI surface unless and until
+        // raising that floor becomes a deliberate product decision -- it would drop
+        // devices, which is not the spike's call to make.
+        .edgesIgnoringSafeArea(.all)
     }
 }
 
