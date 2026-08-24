@@ -6,20 +6,17 @@ init python:
         import vnshell.lifecycle
         vnshell.lifecycle.tick()
 
-        # SPIKE: drain anything Swift posted, and surface it on screen.
-        lib = getattr(store, "vnspike_lib", None)
-        if lib is None:
+        # SPIKE: drain anything Swift wrote, via the same transport the control proved.
+        transport = getattr(store, "vnspike_transport", None)
+        if transport is None:
             return
         try:
-            import ctypes
-            cmd = ctypes.c_int32()
-            buf = ctypes.create_string_buffer(512)
-            while lib.vnbridge_poll(ctypes.byref(cmd), buf, ctypes.c_int32(512)) == 1:
+            for cmd in transport.receive():
                 store.vnspike_received += 1
-                store.vnspike_last = "cmd=%d %r" % (cmd.value, buf.value.decode("utf-8", "replace"))
+                store.vnspike_last = repr(cmd)
                 renpy.restart_interaction()
         except Exception as e:
-            store.vnspike_last = "poll failed: %s" % type(e).__name__
+            store.vnspike_last = "drain failed: %s" % type(e).__name__
 
     config.periodic_callbacks.append(_vnplayer_tick)
 
@@ -70,40 +67,35 @@ init python:
         except Exception as e:
             lines.append("vnshell: FAILED (%s: %s)" % (type(e).__name__, e))
 
-        # --- SPIKE: WHICH symbols can dlsym actually find? ---
-        # Py_Initialize is the control: it comes from the statically linked libpython
-        # and must be present. If the control fails, the whole probe is meaningless --
-        # that is the check that makes this an instrument rather than a guess.
-        store.vnspike_lib = None
+        # --- SPIKE: the file mailbox, using Milestone A's own FileTransport ---
+        #
+        # ctypes.CDLL(None) is dead on this platform (device-verified, with a control:
+        # even Py_Initialize is unresolvable). And a C extension module cannot be built,
+        # because neither renios nor the SDK ships Python.h or a pyconfig.h matching the
+        # prebuilt libpython3.12.a.
+        #
+        # So the mailbox substrate is a file in Documents -- which is what
+        # vnshell.transports.FileTransport already does, and it is already tested.
         try:
-            import ctypes
-            lib = ctypes.CDLL(None)
-            for label, name in (("control Py_Initialize", "Py_Initialize"),
-                                ("swift @_cdecl", "vnspike_ping"),
-                                ("plain C", "vnbridge_ping")):
-                try:
-                    fn = getattr(lib, name)
-                    fn.restype = ctypes.c_int
-                    if name == "Py_Initialize":
-                        lines.append("%s: FOUND (not called)" % label)
-                    else:
-                        lines.append("%s %s: FOUND -> 0x%04X" % (label, name, fn()))
-                        store.vnspike_lib = lib
-                except Exception as e:
-                    lines.append("%s %s: %s" % (label, name, type(e).__name__))
-        except Exception as e:
-            lines.append("ctypes unavailable: %s: %s" % (type(e).__name__, e))
+            docs = os.path.join(os.path.expanduser("~"), "Documents")
+            store.vnspike_cmd_path = os.path.join(docs, "vnplayer-commands.jsonl")
+            lines.append("mailbox: %s" % store.vnspike_cmd_path)
 
-        # --- SPIKE: overlay, if any export seam worked ---
-        if store.vnspike_lib is not None:
-            try:
-                install = store.vnspike_lib.vnspike_install_overlay
-                install.restype = ctypes.c_int
-                rc = install()
-                meaning = {1: "installed", 2: "already", -1: "not main thread", -2: "no scene"}
-                lines.append("swift overlay: rc=%d (%s)" % (rc, meaning.get(rc, "?")))
-            except Exception as e:
-                lines.append("swift overlay: %s: %s" % (type(e).__name__, e))
+            # CONTROL: write a line ourselves and read it back through the same
+            # transport the overlay will use. If this fails, nothing downstream means
+            # anything -- and we learn it here rather than blaming Swift.
+            from vnshell.transports import FileTransport
+            probe = FileTransport(store.vnspike_cmd_path)
+            with open(store.vnspike_cmd_path, "w") as f:
+                f.write('{"command": "self-test"}\n')
+            got = probe.receive()
+            ok = len(got) == 1 and got[0].get("command") == "self-test"
+            lines.append("mailbox control: %s (wrote 1, read %d)"
+                         % ("OK" if ok else "FAILED", len(got)))
+            store.vnspike_transport = probe if ok else None
+        except Exception as e:
+            lines.append("mailbox control: FAILED (%s: %s)" % (type(e).__name__, e))
+            store.vnspike_transport = None
 
         return lines
 

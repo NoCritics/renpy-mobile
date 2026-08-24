@@ -88,13 +88,10 @@ targets:
 
         # Verbatim from renios' prototype, in its order -- static archive link order is
         # significant and this is not a list to tidy.
-        # SPIKE FINDING: without this, ctypes.CDLL(None) cannot see the bridge at all.
-        # __attribute__((used)) stops the COMPILER discarding a symbol, but in an
-        # executable (unlike a dylib) globals are not placed in the dynamic symbol table
-        # unless asked, so dlsym finds nothing. Verified empirically: the Swift @_cdecl
-        # symbol survived into the binary and all four C symbols did not.
+        # -Wl,-export_dynamic was tried and REMOVED: the device showed ctypes could not
+        # resolve any symbol here, including libpython's own, so exporting more of them
+        # was never going to help. The bridge no longer depends on symbol lookup.
         OTHER_LDFLAGS:
-          - -Wl,-export_dynamic
           - -lrenpython
           - -lrenpy
           - -lpython3.12

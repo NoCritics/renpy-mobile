@@ -41,8 +41,10 @@ struct SpikeOverlayView: View {
                         .foregroundColor(.white)
 
                     Button("send to Python") {
-                        // 1 is an arbitrary command id for the spike.
-                        if vnbridge_post(1, "hello from Swift") == 1 {
+                        // No native bridge: append a JSON line to a file in Documents,
+                        // which Python's existing FileTransport (Milestone A, already
+                        // tested) drains. Needs no symbols, headers, or linkage.
+                        if spikeWriteCommand(["command": "hello", "n": posted + 1]) {
                             posted += 1
                         }
                     }
@@ -105,26 +107,31 @@ public func vnspike_install_overlay() -> Int32 {
 }
 
 
-// SPIKE PROBE: Swift @_cdecl wrappers around the C mailbox.
-//
-// Device evidence: ctypes.CDLL(None) could not find the plain C symbols
-// ("dlsym(RTLD_DEFAULT, vnbridge_ping): symbol not found"), even with
-// -Wl,-export_dynamic. But `vnspike_install_overlay` -- a Swift @_cdecl symbol --
-// did survive into the binary. If dlsym can find these wrappers, then the export seam
-// for this project is Swift @_cdecl, not C, and the eventual bridge should be written
-// accordingly.
 
-@_cdecl("vnspike_ping")
-public func vnspike_ping() -> Int32 {
-    return Int32(vnbridge_ping())
-}
+// Writes one newline-delimited JSON command into the app's Documents directory, where
+// Python's FileTransport is polling. Returns false rather than throwing, because a
+// failure here should degrade the overlay, not crash the app.
+func spikeWriteCommand(_ payload: [String: Any]) -> Bool {
+    guard let docs = FileManager.default.urls(for: .documentDirectory,
+                                              in: .userDomainMask).first else {
+        return false
+    }
+    let url = docs.appendingPathComponent("vnplayer-commands.jsonl")
 
-@_cdecl("vnspike_post")
-public func vnspike_post(_ command: Int32) -> Int32 {
-    return Int32(vnbridge_post(command, "from swift wrapper"))
-}
+    guard let data = try? JSONSerialization.data(withJSONObject: payload),
+          var line = String(data: data, encoding: .utf8) else {
+        return false
+    }
+    line += "
+"
 
-@_cdecl("vnspike_poll_count")
-public func vnspike_poll_count() -> Int32 {
-    return vnbridge_post_count()
+    // Append if it exists, create if not. Python consumes the file on read, so it
+    // routinely will not exist.
+    if let handle = try? FileHandle(forWritingTo: url) {
+        defer { try? handle.close() }
+        handle.seekToEndOfFile()
+        handle.write(Data(line.utf8))
+        return true
+    }
+    return (try? line.write(to: url, atomically: true, encoding: .utf8)) != nil
 }
