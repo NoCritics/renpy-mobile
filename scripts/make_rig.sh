@@ -24,4 +24,7 @@ rm -rf "$RIG/vnshell"
 cp "$ROOT/shell/main.py" "$RIG/main.py"
 cp -r "$ROOT/shell/vnshell" "$RIG/vnshell"
 
+rm -rf "$RIG/game"
+cp -r "$ROOT/shell-project/game" "$RIG/game"
+
 echo "Rig ready at $RIG"
