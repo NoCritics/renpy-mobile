@@ -1240,3 +1240,71 @@ gating condition behaves correctly.
   milestone's CI activity has been dense enough that eviction was never observed, but
   a long-idle repository would see the first post-idle run miss and re-save, which is
   correct behavior, not a defect.
+
+### The %{public}s patch does NOT make Ren'Py's log readable over idevicesyslog
+
+Recorded as a negative result, because the reasoning that led to it was sound and someone
+will otherwise try it again.
+
+After patching `Log.m` to `NSLog(@"%{public}s", s)` and capturing through **both** relay
+services from a single launch, the counts from our process were:
+
+- **2 lines decoded**
+- **50 lines `<decode: missing data>`**
+
+The two that decoded are the giveaway. One is a kernel sandbox line; the other is SDL's
+own:
+
+```
+VNPlayer[858] <Notice>: You need UIApplicationSupportsIndirectInputEvents in your Info.plist for mouse support
+```
+
+That is an `NSLog` with a **literal format string and no arguments**. Every line that
+fails to decode is one carrying a `%s` argument.
+
+So the failure was never iOS redaction — `<private>` was a red herring that happened to
+change appearance when the specifier changed. The actual problem is that neither relay
+delivers the **argument payload** for a third-party binary's `os_log` entries; it only
+has what it needs for messages that carry no arguments. Changing `%s` to `%{public}s`
+changes redaction, not deliverability.
+
+**The patch is retained**, because it is not useless everywhere: on a Mac with Console.app
+attached, `%{public}s` is exactly what makes the text visible. It simply does nothing for
+the USB relay this project depends on. It carries a small privacy cost that is likewise
+only realized on a Mac console. Revisit before any wider release.
+
+### What will actually work, and why it is Milestone C's first job
+
+Ren'Py's log and the saves bug have the **same root cause**: both want to write somewhere,
+and the only path the shell offers them is inside the read-only app bundle. The device
+proved both with sandbox denials in the same capture:
+
+```
+deny(1) file-write-create .../VNPlayer.app/base/game/saves
+deny(1) file-write-create .../VNPlayer.app/base/vnplayer-write-probe.tmp
+```
+
+One change fixes both:
+
+1. Point `path_to_logdir()` and `path_to_saves()` at the app's **Data** container, which
+   the device confirmed exists at
+   `/private/var/mobile/Containers/Data/Application/<uuid>/Documents`. Detect iOS with
+   `renpy.ios`, never `sys.platform` — that reads `darwin`.
+2. Add `UIFileSharingEnabled` (and `LSSupportsOpeningDocumentsInPlace`) to the generated
+   `Info.plist`, using the same post-generation patch pattern as `enable_public_log.sh`.
+
+Then `log.txt` and the save files are retrievable two ways, neither needing a console
+tool: `afcclient` over USB (already present in the libimobiledevice suite), and the
+**Files app on the phone**, which matters because the intended reader will not have a PC
+attached.
+
+That is a better outcome than the log relay in every respect: it survives across releases,
+it does not depend on Apple's logging internals, and it is the same work the app needs
+anyway so that saves function at all.
+
+### Incidental finding
+
+`UIApplicationSupportsIndirectInputEvents` is absent from the generated `Info.plist`, and
+SDL says so on every launch. It affects mouse and trackpad input, which a touch-only
+reader does not need — but it is a one-key addition if a Bluetooth trackpad or Mac
+Catalyst ever matters.
