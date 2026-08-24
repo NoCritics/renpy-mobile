@@ -64,6 +64,12 @@ jobs:
       - name: Overlay shell layer
         run: bash scripts/ios/overlay_shell.sh
 
+      # Pre-alpha only: unredacts this app's log in the iOS console so device debugging is
+      # possible at all. See the script header for why the configuration-profile route was
+      # rejected. Revisit before any wider release.
+      - name: Make Ren'Py's log readable on device
+        run: bash scripts/ios/enable_public_log.sh
+
       - name: Inspect generated project
         run: |
           set -euo pipefail
