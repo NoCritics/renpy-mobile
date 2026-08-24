@@ -786,6 +786,22 @@ class MailboxTests(unittest.TestCase):
         self.assertEqual(len(lines), 1)
         self.assertIn("device on fire", lines[0])
 
+    def test_varied_faults_stop_after_the_report_limit(self):
+        # Consecutive-duplicate suppression alone does not throttle varied faults:
+        # each malformed payload produces a different message. poll() runs every
+        # frame, so without an absolute cap this path prints ~60 lines a second.
+        batches = [[f"bad-payload-{i}"] for i in range(60)]
+        mb = Mailbox(FakeTransport(batches))
+        out = io.StringIO()
+
+        with contextlib.redirect_stdout(out):
+            for _ in range(60):
+                mb.poll()
+
+        lines = [l for l in out.getvalue().splitlines() if l.strip()]
+        self.assertEqual(len(lines), Mailbox.REPORT_LIMIT + 1)
+        self.assertIn("further faults suppressed", lines[-1])
+
     def test_non_dict_entry_does_not_raise(self):
         # Transport.receive()'s return type is a hint, not a guarantee: the iOS
         # bridge deserializes data we do not control. One bad entry must not raise,
@@ -903,9 +919,13 @@ class Command:
 
 
 class Mailbox:
+    # Faults are reported at most this many times per Mailbox, ever.
+    REPORT_LIMIT = 20
+
     def __init__(self, transport: Transport) -> None:
         self.transport = transport
         self._last_report: str | None = None
+        self._reports_emitted = 0
 
     def poll(self) -> list[Command]:
         """Return pending commands.
@@ -959,21 +979,39 @@ class Mailbox:
         return Command(name=str(name), args=args)
 
     def _report(self, message: str) -> None:
-        """Record a fault once.
+        """Record a fault, without ever becoming the problem itself.
 
         Silence is the dangerous failure here: a permanently broken command channel
         would otherwise present as "the buttons do nothing" with no trail at all. But
-        poll() runs every frame, so an unconditional print would emit sixty lines a
-        second for as long as the fault lasts. Consecutive identical messages are
-        therefore reported once. On iOS, stdout is already routed to the system log by
-        Ren'Py's iossupport module.
+        poll() runs every frame, so unconditional printing would emit sixty lines a
+        second for as long as the fault lasts.
+
+        Two throttles, because one is not enough. Suppressing consecutive duplicates
+        handles the common case, where a deterministic bug raises the same exception
+        every call. It does nothing for varied faults — a transport feeding back a
+        different malformed payload each frame produces a different message each
+        frame, since the message embeds the offending entry. The absolute cap covers
+        that, and every other variety we have not thought of.
+
+        On iOS, stdout is already routed to the system log by Ren'Py's iossupport
+        module, so print is the right primitive.
         """
 
         if message == self._last_report:
             return
 
         self._last_report = message
-        print(f"[vnshell] mailbox: {message}")
+
+        if self._reports_emitted >= self.REPORT_LIMIT:
+            return
+
+        self._reports_emitted += 1
+
+        if self._reports_emitted == self.REPORT_LIMIT:
+            print(f"[vnshell] mailbox: {message}")
+            print("[vnshell] mailbox: report limit reached, further faults suppressed")
+        else:
+            print(f"[vnshell] mailbox: {message}")
 
 
 MAILBOX = Mailbox(NullTransport())
@@ -985,7 +1023,7 @@ Run:
 ```bash
 bash scripts/run_tests.sh
 ```
-Expected: all tests PASS (3 path + 4 transport + 6 mailbox = 13).
+Expected: all tests PASS (3 path + 4 transport + 7 mailbox = 14).
 
 - [ ] **Step 6: Commit**
 
