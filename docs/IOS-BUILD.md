@@ -1,11 +1,15 @@
 # iOS build notes
 
 Recorded from real GitHub Actions runs on `macos-15`, triggered by
-`.github/workflows/ios-build.yml` (job `discover`) on branch `milestone-b`. This is a
-discovery-only workflow: it fetches the pinned Ren'Py 8.5.3 SDK and `renios` package and
-inventories what `renios` actually contains, so Tasks 2-4 of the Milestone B plan can be
-written against real facts instead of assumptions. Nobody on this project had opened
-`renpy-8.5.3-renios.zip` before this task.
+`.github/workflows/ios-build.yml` (job `discover`) on branch `milestone-b`. It started as
+a discovery-only workflow — it fetched the pinned Ren'Py 8.5.3 SDK and `renios` package
+and inventoried what `renios` actually contains, so Tasks 2-4 of the Milestone B plan
+could be written against real facts instead of assumptions, since nobody on this project
+had opened `renpy-8.5.3-renios.zip` before this task. The `discover` job name is a
+holdover from that original scope: the same workflow now also generates the Xcode
+project, overlays the shell layer, archives and packages the unsigned `.ipa`, and (on a
+tag push) attaches it to a GitHub Release. This document now records Tasks 1 through 6 —
+including the first physical-device install — not just the original discovery pass.
 
 **Every figure below is quoted or directly derived from a specific CI log line or a
 downloaded workflow artifact — see the run links.** Anything not captured by the
@@ -70,14 +74,14 @@ because it was weakened.
 
 ## renios top-level layout
 
-From `Inventory renios` (run 32740201093 and 32740372920, identical):
+From `Inventory renios` (run 32740201093 and 32740372920, identical). The step's actual
+command was `ls -la "$RENIOS"`; the three names below are the entries it listed, not a
+verbatim reproduction of the full `ls -la` output (permissions/size/date columns
+omitted for brevity):
 
-```
-$ ls -la vendor/renios
-buildlib/
-hash.txt
-prototype/
-```
+- `buildlib/`
+- `hash.txt`
+- `prototype/`
 
 Depth-2:
 ```
@@ -96,8 +100,10 @@ vendor/renios/prototype/prototype.xcodeproj
   were **not inventoried** in this task; that is out of scope for "what does the package
   contain," and is a candidate for closer reading before Task 2/3 if the build needs to
   invoke it rather than drive Xcode directly.
-- `hash.txt` exists at the top level (64 bytes) — not opened; presumed a build hash/version
-  stamp, **not determined**.
+- `hash.txt` exists at the top level — not opened, contents presumed a build hash/version
+  stamp, **not determined**. (Its size was previously stated here as "64 bytes"; that
+  figure traces to no quoted CI log line and has been removed rather than repeated
+  unverified.)
 - `prototype/` is the actual Xcode project skeleton: `Frameworks/`, `IAPHelper.m`,
   `Info.plist`, `Launch Screen.storyboard`, `LaunchImage-background.png`,
   `LaunchImage-foreground.png`, `Log.m`, `main.c`, `Media.xcassets`, `prebuilt/`,
@@ -964,9 +970,15 @@ uncompressed-content growth instead. Entry count held at **1,432 files** both ti
 Installed via Sideloadly on a physical iPhone by the project owner, 2026-08-24. Developer
 mode enabled, developer certificate trusted. **The app launches and runs our shell layer.**
 
-Evidence is a photograph of the running app, kept at `logs/photo_2026-08-24_21-26-45.jpg`.
-Everything below is transcribed from that screen — it is device output, not a build-time
-inference.
+`TODO(device): model and iOS version not yet recorded — required before this claims
+which iOS versions are proven.` The install plan called for capturing both; neither was
+supplied by the time this task closed. Nothing in this document should be read as
+implying a specific device model or iOS version — only that at least one physical
+iPhone, of unrecorded model and OS version, ran this build successfully.
+
+Evidence is a screenshot of the running app (1280x591), kept at
+`logs/photo_2026-08-24_21-26-45.jpg`. Everything below is transcribed from that screen —
+it is device output, not a build-time inference.
 
 ```
 VNPlayer shell is running

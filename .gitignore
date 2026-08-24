@@ -18,4 +18,7 @@ traceback.txt
 errors.txt
 
 # Device syslog captures: system-wide, may contain data from other apps.
-logs/*.log
+# Ignore everything else added to logs/ by default (captures, ad-hoc screenshots), and
+# explicitly re-track the one screenshot already committed as evidence in IOS-BUILD.md.
+logs/*
+!logs/photo_2026-08-24_21-26-45.jpg

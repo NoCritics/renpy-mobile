@@ -70,20 +70,21 @@ jobs:
       - name: Overlay shell layer
         run: bash scripts/ios/overlay_shell.sh
 
-      # Pre-alpha only: unredacts this app's log in the iOS console so device debugging is
-      # possible at all. See the script header for why the configuration-profile route was
-      # rejected. Revisit before any wider release.
+      # Pre-alpha only: makes this app's log readable in Console.app on a Mac (changes
+      # redaction, not deliverability -- it does NOT fix reading the log over the USB
+      # relay this project's device_log.sh actually uses; see the script header and
+      # docs/IOS-BUILD.md for the measured result). Revisit before any wider release.
       - name: Make Ren'Py's log readable on device
         run: bash scripts/ios/enable_public_log.sh
 
       - name: Inspect generated project
         run: |
           set -euo pipefail
-          find build/xcode -maxdepth 3 | sort | head -60
+          find build/xcode -maxdepth 3 | sort | sed -n '1,60p'
           echo "=== base/ contents ==="
-          ls -la build/xcode/*/base | head -30
+          ls -la build/xcode/*/base | sed -n '1,30p'
           echo "=== is our game in base/? ==="
-          ls -la build/xcode/*/base/game | head -20
+          ls -la build/xcode/*/base/game | sed -n '1,20p'
           echo "=== schemes ==="
           xcodebuild -list -project build/xcode/*/*.xcodeproj
           echo "=== bundle id / product name (record, do not fix here) ==="
@@ -95,7 +96,7 @@ jobs:
           # implicit fail-closed behavior. Make the pass/fail condition
           # explicit instead of relying on ls/find's own exit codes.
           echo "=== explicit assertions ==="
-          PROJDIR="$(find build/xcode -mindepth 1 -maxdepth 1 -type d | head -1)"
+          PROJDIR="$(find build/xcode -mindepth 1 -maxdepth 1 -type d -print -quit)"
           test -n "$PROJDIR" || { echo "ASSERT FAILED: no project directory under build/xcode" >&2; exit 1; }
           test -d "$PROJDIR/base" || { echo "ASSERT FAILED: $PROJDIR/base does not exist" >&2; exit 1; }
           test -d "$PROJDIR/base/game" || { echo "ASSERT FAILED: $PROJDIR/base/game does not exist" >&2; exit 1; }
@@ -158,12 +159,22 @@ jobs:
           LISTING="$(unzip -l "$IPA")"
 
           echo "=== vnshell/ modules present in $IPA ==="
-          # All seven modules, not just the five originally checked: __init__.py makes
-          # vnshell a package (without it "import vnshell" fails outright), and
-          # harness.py is as much a part of the shell as the rest. A guard that only
-          # watched five of seven files would print all-green while the sixth or
-          # seventh silently failed to reach the bundle.
-          for f in __init__ harness lifecycle purge mailbox state transports; do
+          # Derive the expected module list from shell/vnshell/ (the source of truth)
+          # instead of hardcoding it here. A hardcoded list silently stops covering new
+          # modules as vnshell/ grows -- exactly what happened once already this
+          # milestone, when a guard watching five of seven modules printed all-green
+          # while __init__.py and harness.py went unchecked (see docs/IOS-BUILD.md's
+          # Task 4 fix round). This reads the actual filenames checked out from the repo,
+          # so a new module (e.g. importer.py in Milestone C) is covered automatically.
+          MODULES=()
+          for f in shell/vnshell/*.py; do
+            MODULES+=("$(basename "$f" .py)")
+          done
+          if [ "${#MODULES[@]}" -eq 0 ]; then
+            echo "ASSERT FAILED: no *.py files found under shell/vnshell/ -- source of truth for the module list is empty or missing" >&2
+            exit 1
+          fi
+          for f in "${MODULES[@]}"; do
             MATCH="$(printf '%s\n' "$LISTING" | grep -E "vnshell/${f}\.py" || true)"
             if [ -z "$MATCH" ]; then
               echo "ASSERT FAILED: vnshell/${f}.py not found in $IPA -- shell layer incomplete" >&2

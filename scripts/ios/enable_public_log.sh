@@ -17,8 +17,21 @@
 # unsigned profile, and signing one requires a certificate this project deliberately does
 # not have. It is also device-wide, unredacting every app rather than ours.
 #
-# So we patch the format specifier to %{public}s instead. That unredacts ONLY this app,
-# needs no device settings, and survives a reinstall.
+# MEASURED RESULT: %{public}s does NOT make the log readable over the USB relay this
+# project depends on (scripts/ios/device_log.sh, idevicesyslog). A live device capture
+# through both relay services showed only 2 of 52 of our lines actually decoding -- and
+# both of those were NSLog calls with a literal, argument-free format string. Every line
+# carrying a %s argument still failed to decode, regardless of whether it was %s or
+# %{public}s. The <private> redaction was a red herring: the real problem is that neither
+# relay delivers the argument payload for a third-party binary's os_log entries at all.
+# Changing the specifier changes redaction, not deliverability. See
+# docs/IOS-BUILD.md, "The %{public}s patch does NOT make Ren'Py's log readable over
+# idevicesyslog", for the full evidence.
+#
+# The one reason this patch is kept: on a Mac with Console.app attached (not the USB
+# relay), %{public}s is exactly what makes the text visible instead of <private>. It does
+# nothing for device debugging via idevicesyslog, which is what this project actually
+# uses day to day.
 #
 # Scope
 # -----

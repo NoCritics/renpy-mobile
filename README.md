@@ -10,7 +10,9 @@ not yet import or play visual novels; see `docs/IOS-BUILD.md` for what has actua
 measured.
 
 - Install it: `docs/INSTALL.md`
-- Latest release: https://github.com/NoCritics/renpy-mobile/releases/latest
+- Latest release: https://github.com/NoCritics/renpy-mobile/releases/latest (404s until
+  the first tag is pushed — no release exists yet; `docs/INSTALL.md` has a working
+  fallback via the Actions workflow's Artifacts in the meantime)
 - Design: `docs/superpowers/specs/2026-08-24-renpy-ios-player-design.md`
 - Research: `docs/2026-08-24-research-renpy-ios-player.md`
 

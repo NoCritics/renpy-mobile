@@ -14,8 +14,10 @@ result today — see step 8.
 You need:
 
 - A Windows PC with a USB cable that can both charge and sync your iPhone.
-- An iPhone. Any iOS version from the last few years works; iOS 16 and later need one
-  extra step (step 4).
+- An iPhone. The build's deployment target is iOS 13, and it has been confirmed working
+  on one physical device (model and exact iOS version not yet recorded here). Other iOS
+  13+ versions are expected to work but have not been individually tested. iOS 16 and
+  later need one extra step (step 4).
 - A free Apple ID (the same kind you'd use for the App Store). If you don't want to use
   your main one, any free Apple ID works — this does not require a paid Apple Developer
   Program membership.
@@ -31,10 +33,20 @@ You need:
 ## 1. Download the `.ipa`
 
 Go to the [latest release](https://github.com/NoCritics/renpy-mobile/releases/latest)
-and download `VNPlayer.ipa` (about 27 MB). If there is no release yet, download it from
-the **Artifacts** section of the most recent successful run of the
+and download `VNPlayer.ipa` (about 27 MB). **That link only works once the project has
+published its first tagged release — as of this writing, none has been, so it will
+404.** Until then, download it from the **Artifacts** section of the most recent
+successful run of the
 [iOS build workflow](https://github.com/NoCritics/renpy-mobile/actions/workflows/ios-build.yml)
 instead — you'll need a free GitHub account to download workflow artifacts.
+
+**The Artifacts download is a `.zip`, not the `.ipa` directly.** GitHub always wraps
+workflow artifacts in a zip file, so you'll get something named `VNPlayer-ipa.zip`.
+**Unzip it first** — dragging the `.zip` itself into Sideloadly in step 6 will fail.
+Inside is `VNPlayer.ipa`; drag that file, not the zip.
+
+Workflow artifacts also **expire** (90 days by default) — if the run you find is old,
+look for a more recent successful run instead.
 
 ## 2. Install Sideloadly and the USB drivers
 
@@ -118,7 +130,7 @@ up is the app working correctly, not a crash or a bug.
 One detail you may notice: the bundle identifier baked into the `.ipa` is
 `io.github.nocritics.vnplayer`, but Sideloadly rewrites it during signing to include
 your own signing team, so what actually shows up on the device is something like
-`io.github.nocritics.vnplayer.RSL349SL6N` (the suffix is specific to your Apple ID).
+`io.github.nocritics.vnplayer.XXXXXXXXXX` (the suffix is specific to your Apple ID).
 That's expected — it's not a different or corrupted app.
 
 ## Free Apple ID limits
@@ -151,24 +163,26 @@ expiry described above, not a bug. Re-install with Sideloadly.
 expected, correct result right now — see step 8. VNPlayer is pre-alpha and does not yet
 import or play visual novels; this diagnostic screen is proof the engine is running.
 
-**It crashes immediately, or the diagnostic screen never appears.** First check
+**It crashes immediately, or the diagnostic screen never appears.** Check
 **Settings → Privacy & Security → Analytics & Improvements → Analytics Data** on the
-phone for a recent entry named after the app, and save a copy — it's the most useful
-thing to report. For more detail, you can capture the phone's live console output from
-a PC with a terminal:
+phone for a recent entry named after the app, and save a copy — that's the most useful
+thing to report, and it needs nothing beyond the phone itself.
+
+### If you have the repository checked out
+
+If you cloned the source repository (not just downloaded the `.ipa`), you can capture
+the phone's live console output from a PC with a terminal instead:
 
 ```
 bash scripts/ios/device_log.sh 30
 ```
 
-This requires [libimobiledevice for Windows](https://github.com/jrjr/libimobiledevice-windows)
-and a USB connection to an unlocked, trusted phone; it writes 30 seconds of the device's
-log to `logs/device.log` and prints a summary of anything from VNPlayer. Ren'Py's own
-log lines are only readable in this capture because the build patches `Log.m` to use
-`%{public}s` instead of Apple's default redacted `%s` (see
-`scripts/ios/enable_public_log.sh`) — a pre-alpha debugging affordance that makes this
-app's log visible to anyone with USB access to the phone, and one this project intends
-to revisit before any wider release.
+This needs a working Git Bash (or WSL/MSYS) with the repository checked out,
+[libimobiledevice for Windows](https://github.com/jrjr/libimobiledevice-windows)
+installed, and a USB connection to an unlocked, trusted phone; it writes 30 seconds of
+the device's log to `logs/device.log` and prints a summary of anything from VNPlayer.
+Most readers of this guide downloaded only the `.ipa` and will not have any of these —
+use the Analytics Data route above instead.
 
 ## What's next
 
