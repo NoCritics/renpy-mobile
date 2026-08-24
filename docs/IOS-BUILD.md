@@ -1166,11 +1166,23 @@ works identically on a fork with zero setup. The job's `permissions:` block was 
 needs it to create/update a release and attach an asset; every other step in the job
 only reads the checkout and needs no elevated permission.
 
-**Not exercised in CI yet.** Per the task's own constraint, no tag has been pushed and
-no release published — that is the repository owner's decision, not this task's to
-make. The change was verified by parsing the workflow YAML (`yaml.safe_load` — parses
-clean) and by re-reading `softprops/action-gh-release@v2`'s documented interface, not
-by a live tag-triggered run. Mark this **unverified by a real run**, not confirmed.
+**VERIFIED by a real tag push.** Recorded as unverified when Task 6 closed, because no
+tag had been pushed and publishing was the owner's decision rather than the task's. The
+owner tagged `v0.1.0` on 2026-08-24 and the path executed end to end:
+
+- run **32778918074**, triggered by the tag push, green.
+- Release published at
+  <https://github.com/NoCritics/renpy-mobile/releases/tag/v0.1.0> — not a draft,
+  not a prerelease.
+- Asset attached automatically: `VNPlayer.ipa`, **28,022,919 bytes**.
+- No configured secret was involved; the automatic per-run `GITHUB_TOKEN` plus the
+  job's `permissions: contents: write` block was sufficient, which is what makes the
+  path work on a fork.
+
+Note the asset is 28,022,919 bytes here against the 28,006,947 recorded in Task 3. The
+difference is 15,972 bytes and is expected: the intervening commits changed
+`shell-project/game/script.rpy` (the diagnostic screen) and added the `%{public}s` patch
+to `Log.m`. It is not evidence of a packaging inconsistency.
 
 ## Cache hit: observed, not assumed
 
@@ -1247,9 +1259,9 @@ gating condition behaves correctly.
 
 ## Not determined (Task 6)
 
-- Whether `softprops/action-gh-release@v2` actually succeeds against a real tag push —
-  no tag has been pushed. The repository owner publishing a release is what will
-  exercise this for the first time.
+- ~~Whether `softprops/action-gh-release@v2` actually succeeds against a real tag
+  push~~ — **resolved 2026-08-24**: it does. See the Task 6 release section above for
+  the run, the release URL and the attached asset size.
 - Whether the default `GITHUB_TOKEN` permissions on a fork (which may differ from this
   repository's settings) are sufficient without the explicit `permissions:` block this
   task added — the block was added specifically so this does not depend on a fork

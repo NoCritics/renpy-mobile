@@ -34,12 +34,24 @@ You need:
 ## 1. Download the `.ipa`
 
 Go to the [latest release](https://github.com/NoCritics/renpy-mobile/releases/latest)
-and download `VNPlayer.ipa` (about 27 MB). **That link only works once the project has
-published its first tagged release — as of this writing, none has been, so it will
-404.** Until then, download it from the **Artifacts** section of the most recent
-successful run of the
-[iOS build workflow](https://github.com/NoCritics/renpy-mobile/actions/workflows/ios-build.yml)
-instead — you'll need a free GitHub account to download workflow artifacts.
+and download `VNPlayer.ipa` (about 27 MB). No account needed, and the file downloads
+ready to use — drag it straight into Sideloadly at step 5.
+
+<details>
+<summary>Alternative: the very latest build, before it has been released</summary>
+
+Every push builds an `.ipa`, and those are available before they are tagged as a
+release. Open the
+[iOS build workflow](https://github.com/NoCritics/renpy-mobile/actions/workflows/ios-build.yml),
+click the most recent run with a green tick, and download `VNPlayer-ipa` from its
+**Artifacts** section. Two differences from the release download:
+
+- you need a free GitHub account, and
+- **it arrives as a `.zip`.** Unzip it first and use the `VNPlayer.ipa` inside —
+  handing Sideloadly the `.zip` itself will not work.
+
+Artifacts are also deleted after 90 days, while releases stay.
+</details>
 
 **The Artifacts download is a `.zip`, not the `.ipa` directly.** GitHub always wraps
 workflow artifacts in a zip file, so you'll get something named `VNPlayer-ipa.zip`.

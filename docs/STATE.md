@@ -14,9 +14,10 @@ refresh.
 so it survives a checkout but not a `git clean -fdx`). It is also downloadable from the
 **Artifacts** section of the most recent successful run of the
 [iOS build workflow](https://github.com/NoCritics/renpy-mobile/actions/workflows/ios-build.yml),
-artifact `VNPlayer-ipa`. No GitHub Release has been published yet — no tag has been
-pushed, so the release-attachment path in Task 6 remains unexercised by a real run (see
-`docs/IOS-BUILD.md`'s Task 6 section).
+artifact `VNPlayer-ipa`. It is also published as a **GitHub Release**:
+<https://github.com/NoCritics/renpy-mobile/releases/tag/v0.1.0> (`v0.1.0`, tagged
+2026-08-24, `VNPlayer.ipa` attached automatically by CI). The release-attachment path is
+therefore **verified by a real tag push**, not merely wired up.
 
 The SDD ledger — every ruling, every deferred finding, what is done and what is not — is at
 `.superpowers/sdd/2026-08-24-milestone-b-ios-pipeline/progress.md`. **Read it before
@@ -67,8 +68,9 @@ Developer Program membership, and no secrets of any kind:
   A's shell layer is proven portable to iOS at runtime, not just present on disk in the
   bundle. This was the milestone's central unproven claim.
 - Release automation (tag-triggered `.ipa` upload to a GitHub Release) is wired into
-  `ios-build.yml` but **not yet exercised by a real tag push** — that is the repository
-  owner's decision, not this milestone's.
+  `ios-build.yml` and **verified by a real tag push**: `v0.1.0` produced a published
+  release with `VNPlayer.ipa` (28,022,919 bytes) attached, using only the automatic
+  `GITHUB_TOKEN`.
 
 **The shell project currently renders a diagnostic screen** — engine and Python
 versions, container paths, and a live seconds counter — **not** a black screen and not
