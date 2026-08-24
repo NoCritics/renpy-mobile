@@ -16,3 +16,6 @@ saves/
 log.txt
 traceback.txt
 errors.txt
+
+# Device syslog captures: system-wide, may contain data from other apps.
+logs/*.log
