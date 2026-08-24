@@ -6,7 +6,7 @@
 
 **Architecture:** Ren'Py's desktop entry point `renpy.py` is explicitly a distributor customization module, and Ren'Py assigns it to `renpy.__main__`. On iOS the equivalent file is `base/main.py`, which we ship. We therefore write one `main.py` that works in both places: it overrides the documented `path_to_*` hooks, monkey-patches `renpy.bootstrap.get_alternate_base` to act as a pure "which game next" selector, and drives game switching through `UtterRestartException` inside Ren'Py's existing restart loop. A pluggable mailbox transport lets the same code be driven by a test harness on desktop and by Swift on iOS.
 
-**Tech Stack:** Ren'Py 8.5.3 SDK (bundled CPython 3.12.8), Python 3.12 `unittest` (stdlib only — no third-party test deps), Git Bash for scripts.
+**Tech Stack:** Ren'Py 8.5.3 SDK (bundled CPython 3.12.7), Python 3.12 `unittest` (stdlib only — no third-party test deps), Git Bash for scripts.
 
 **Spec:** `docs/superpowers/specs/2026-08-24-renpy-ios-player-design.md`
 
@@ -39,7 +39,7 @@ building an iOS app on a false premise.
 - **No third-party Python dependencies.** Tests use stdlib `unittest`. The runtime uses
   only what the Ren'Py SDK already bundles. Anything else has to be vendored into an
   iOS static build later, which we are not doing.
-- **stdlib-only, Python 3.12 syntax.** The bundled interpreter is CPython 3.12.8.
+- **stdlib-only, Python 3.12 syntax.** The bundled interpreter is CPython 3.12.7.
 - **No network access at runtime.** Scripts may download the SDK; the shell layer may not.
 - **Working name is `VNPlayer`**; environment variables use the `VNPLAYER_` prefix.
   Renaming happens later and must be a single find-and-replace.

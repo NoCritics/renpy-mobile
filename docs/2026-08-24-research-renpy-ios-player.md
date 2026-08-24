@@ -19,7 +19,7 @@ Read: Spark is the quality bar; Pocket is the one people resent. A genuinely fre
 
 Official pipeline: **renpy-build** (github.com/renpy/renpy-build) — `renios` was archived 2026-08-09 and folded in. Ships prebuilt as `renpy-8.5.3-renios.zip`, **130 MB**, containing the Xcode "prototype" project + prebuilt static libs (`prototype/prebuilt/release/*.a` for `ios-arm64`, `debug/` for both simulator arches) + a `base/` tree with the Python runtime and Ren'Py itself.
 
-Current stack (8.5.3, released 2026-05-15): **CPython 3.12.8**, **SDL3** + SDL3_image, MetalANGLE (GLES→Metal), FFmpeg 4.3.1, freetype 2.13.3, harfbuzz 8.0.1, fribidi, libavif/aom/yuv/jpeg/png/webp, openssl 3.3.2, assimp, **pyobjus** (Python→Objective-C bridge, the iOS analogue of pyjnius).
+Current stack (8.5.3, released 2026-05-15): **CPython 3.12.7**, **SDL3** + SDL3_image, MetalANGLE (GLES→Metal), FFmpeg 4.3.1, freetype 2.13.3, harfbuzz 8.0.1, fribidi, libavif/aom/yuv/jpeg/png/webp, openssl 3.3.2, assimp, **pyobjus** (Python→Objective-C bridge, the iOS analogue of pyjnius).
 
 ### The boot path — this is the whole ballgame
 

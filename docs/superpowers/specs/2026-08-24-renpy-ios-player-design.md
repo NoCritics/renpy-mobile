@@ -55,7 +55,7 @@ game controller support, Live2D.
 | iOS forbids spawning processes | One process for the whole app lifetime. Game switching happens in-process. |
 | Target user is not a developer | Errors must be legible and actionable. Install docs are a tracked deliverable. |
 
-Pinned engine: **Ren'Py 8.5.3** (CPython 3.12.8, SDL3, MetalANGLE, FFmpeg 4.3.1).
+Pinned engine: **Ren'Py 8.5.3** (CPython 3.12.7, SDL3, MetalANGLE, FFmpeg 4.3.1).
 Device: arm64 only. The minimum iOS version is inherited from the `renios` prototype
 project's deployment target rather than chosen by us; we adopt whatever it sets and
 record the value in M0. For reference, the comparable shipping apps require iOS 15.5
@@ -73,7 +73,7 @@ One process. Three `UIWindow`s. Ren'Py runs stock — the engine is never forked
  ├─ OverlayWindow     windowLevel .normal + 1   passthrough hitTest
  ├─ SDL game window   windowLevel .normal       MetalANGLE / CAMetalLayer
  │
- └─ Embedded CPython 3.12.8
+ └─ Embedded CPython 3.12.7
     ├─ base/main.py            ours — monkey-patches, then boots Ren'Py
     ├─ base/shell/             ours — mailbox, purge, launcher project
     └─ renpy/                  stock Ren'Py 8.5.3
