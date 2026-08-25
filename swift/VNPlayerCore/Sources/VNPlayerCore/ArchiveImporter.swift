@@ -167,8 +167,15 @@ public final class ArchiveImporter {
             }
         }
 
+        // Name the game after its DISTRIBUTION ROOT, not after the archive's single
+        // top-level directory. Those coincide for the common "MyGame-1.2-pc/" layout,
+        // and differ exactly where it matters: an archive whose root IS the game --
+        // "game/script.rpy" at the top level -- has a single top-level directory called
+        // "game", and calling the game "game" is useless. In that case the archive's own
+        // filename is the only name we have.
+        let rootName = plan_rootName(distributionRoot: root)
         let identity = GameIdentityDeriver.derive(
-            topLevelDirectory: EngineDetector.singleTopLevelDirectory(relativePaths: allPaths),
+            topLevelDirectory: rootName,
             archiveFileName: archiveFileName
         )
 
@@ -306,6 +313,13 @@ public final class ArchiveImporter {
             shiftJISAttempt: entry.path(using: .shiftJIS),
             libraryDefault: entry.path
         )
+    }
+
+    /// The last component of the distribution root, or nil when the root is the archive
+    /// itself. nil sends `GameIdentityDeriver` to the archive filename.
+    private func plan_rootName(distributionRoot root: String) -> String? {
+        guard !root.isEmpty else { return nil }
+        return root.split(separator: "/").last.map(String.init)
     }
 
     /// Strips the distribution root prefix. Returns nil for paths outside it.

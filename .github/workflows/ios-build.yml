@@ -56,7 +56,11 @@ jobs:
             echo "ASSERT FAILED: no test summary in output" >&2
             exit 1
           fi
-          EXECUTED=$(grep -oE "Executed [0-9]+ test" test-output.txt | head -1 | grep -oE "[0-9]+")
+          # tail -1, not head -1. Every test SUITE prints its own "Executed N tests"
+          # line and the overall total is last, so head -1 reads whichever suite happened
+          # to run first -- it reported 25 for a run of 60 and failed a threshold that
+          # was actually met.
+          EXECUTED=$(grep -oE "Executed [0-9]+ test" test-output.txt | tail -1 | grep -oE "[0-9]+")
           echo "executed $EXECUTED tests"
           if [ "$EXECUTED" -lt 40 ]; then
             echo "ASSERT FAILED: only $EXECUTED tests ran; expected at least 40" >&2

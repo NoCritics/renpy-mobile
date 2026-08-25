@@ -124,6 +124,19 @@ final class ArchiveImporterTests: XCTestCase {
         XCTAssertTrue(extractedPaths().contains("game/script.rpy"))
     }
 
+    func testWrapperDirectoryNamedGameIsNotMistakenForTheGameDirectory() throws {
+        // "Game/game/..." -- a wrapper folder whose name case-folds onto the real game
+        // directory. A case-insensitive shallowest match roots this at "", extracts one
+        // level too deep, and produces a game Ren'Py cannot load. The fixture below has
+        // exactly this shape, which is how the bug was found.
+        let importer = ArchiveImporter()
+        let url = try fixture("utf8-names.zip")
+        let plan = try importer.plan(archiveURL: url, archiveFileName: "utf8-names.zip")
+
+        XCTAssertEqual(plan.distributionRoot, "Game")
+        XCTAssertEqual(plan.identity.title, "Game")
+    }
+
     func testUTF8NamesSurvive() throws {
         let importer = ArchiveImporter()
         let url = try fixture("utf8-names.zip")
@@ -135,17 +148,40 @@ final class ArchiveImporterTests: XCTestCase {
         XCTAssertTrue(paths.contains("game/images/café.png"), "got \(paths)")
     }
 
-    func testZip64IsParsed() throws {
-        // The fixture forces ZIP64 records despite a tiny payload, so this exercises the
-        // ZIP64 end-of-central-directory path rather than needing a 4 GB file.
+    func testZip64EntryFieldsAreParsed() throws {
+        // ZIP64 extra fields on each entry, but Python still writes a CLASSIC 22-byte
+        // trailer for this archive -- so usedZip64Trailer is correctly false here. The
+        // first version of this test asserted true and failed, because it was written
+        // against a field name (`isZip64`) that promised more than the field measured.
         let importer = ArchiveImporter()
         let url = try fixture("zip64.zip")
 
         let summary = try ZipDirectoryReader.read(contentsOf: url)
-        XCTAssertTrue(summary.isZip64)
+        XCTAssertFalse(summary.usedZip64Trailer)
         XCTAssertEqual(summary.declaredEntryCount, 4)
 
         let plan = try importer.plan(archiveURL: url, archiveFileName: "zip64.zip")
+        try importer.extract(archiveURL: url, plan: plan, to: staging)
+        XCTAssertTrue(extractedPaths().contains("game/script.rpy"))
+    }
+
+    func testZip64TrailerIsParsed() throws {
+        // The ZIP64 end-of-central-directory path. Nothing exercised it until this
+        // fixture existed: the classic trailer only saturates past 65535 entries or
+        // 4 GB, so the reader's ZIP64 branch was shipped untested. The fixture
+        // synthesises a real ZIP64 trailer over a small archive -- see the generator.
+        let url = try fixture("zip64-trailer.zip")
+
+        let summary = try ZipDirectoryReader.read(contentsOf: url)
+        XCTAssertTrue(summary.usedZip64Trailer)
+        // Read out of the ZIP64 record, since the classic one says 0xFFFF.
+        XCTAssertEqual(summary.declaredEntryCount, 4)
+        XCTAssertFalse(summary.isMultiDisk)
+
+        // And it still extracts: a fixture that exercised the parser but could not be
+        // read would not tell us the parse produced usable values.
+        let importer = ArchiveImporter()
+        let plan = try importer.plan(archiveURL: url, archiveFileName: "zip64-trailer.zip")
         try importer.extract(archiveURL: url, plan: plan, to: staging)
         XCTAssertTrue(extractedPaths().contains("game/script.rpy"))
     }

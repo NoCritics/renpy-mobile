@@ -23,7 +23,14 @@ public struct ZipDirectorySummary: Equatable {
     public let diskNumber: UInt32
     /// The disk the central directory starts on. Must equal `diskNumber`.
     public let centralDirectoryDiskNumber: UInt32
-    public let isZip64: Bool
+    /// True when the trailer REQUIRED ZIP64 records to express its values.
+    ///
+    /// Not "the archive uses ZIP64 anywhere": an archive can carry ZIP64 extra fields on
+    /// individual entries while its end-of-central-directory record stays in the classic
+    /// form. This flag is about the trailer this type parses, and nothing else. Named
+    /// carefully because the first version was called `isZip64`, and a test written
+    /// against that name asserted something the field never claimed.
+    public let usedZip64Trailer: Bool
 
     public var isMultiDisk: Bool {
         diskNumber != 0 || centralDirectoryDiskNumber != 0
@@ -102,7 +109,7 @@ public enum ZipDirectoryReader {
                 declaredEntryCount: UInt64(entryCount16),
                 diskNumber: UInt32(diskNumber16),
                 centralDirectoryDiskNumber: UInt32(cdDiskNumber16),
-                isZip64: false
+                usedZip64Trailer: false
             )
         }
 
@@ -127,7 +134,7 @@ public enum ZipDirectoryReader {
             declaredEntryCount: readUInt64(record, 32),
             diskNumber: readUInt32(record, 16),
             centralDirectoryDiskNumber: readUInt32(record, 20),
-            isZip64: true
+            usedZip64Trailer: true
         )
     }
 

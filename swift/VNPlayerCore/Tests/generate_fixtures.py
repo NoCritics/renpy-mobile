@@ -140,6 +140,65 @@ def main() -> None:
                     f.write(data)
     write("zip64.zip", build_zip64)
 
+    def build_zip64_trailer(path):
+        """An archive whose END OF CENTRAL DIRECTORY record is genuinely ZIP64.
+
+        zip64.zip above forces ZIP64 extra fields on each ENTRY, but Python still writes
+        a classic 22-byte trailer for it -- so it does not exercise the ZIP64 trailer
+        path at all. That path only triggers naturally past 65535 entries or 4 GB, which
+        is not a fixture anyone wants in a repository.
+
+        So the trailer is synthesised: take a good archive, read its real counts out of
+        the classic record, then rewrite the tail as
+        [ZIP64 EOCD][ZIP64 locator][classic EOCD with saturated fields]. The entry data
+        and central directory are untouched, so the archive still extracts normally --
+        which is the point. A fixture that only tested the parser but could not be read
+        would not tell us the parse produced usable values.
+        """
+        source = os.path.join(OUT, "good-deflated.zip")
+        with open(source, "rb") as f:
+            blob = f.read()
+
+        # An explicit byte list rather than an escaped string literal: that form has
+        # twice been mangled passing through a shell heredoc into this file, once
+        # losing the escapes entirely and once leaving raw control bytes in the
+        # source. Both happened to still work, which is the dangerous part.
+        eocd_signature = bytes([0x50, 0x4B, 0x05, 0x06])
+        eocd = blob.rfind(eocd_signature)
+        assert eocd != -1, "no EOCD in the source fixture"
+
+        disk, cd_disk, on_disk, total, cd_size, cd_offset, comment_len = struct.unpack_from(
+            "<HHHHIIH", blob, eocd + 4)
+        assert comment_len == 0, "source fixture unexpectedly has a comment"
+
+        zip64_eocd_offset = eocd
+
+        zip64_eocd = struct.pack(
+            "<IQHHIIQQQQ",
+            0x06064B50,   # signature
+            44,           # size of this record, excluding the first 12 bytes
+            45, 45,       # version made by / needed
+            disk, cd_disk,
+            on_disk, total,
+            cd_size, cd_offset,
+        )
+        assert len(zip64_eocd) == 56, len(zip64_eocd)
+
+        locator = struct.pack("<IIQI", 0x07064B50, 0, zip64_eocd_offset, 1)
+        assert len(locator) == 20, len(locator)
+
+        # Saturated so a reader MUST consult the ZIP64 records.
+        classic = struct.pack(
+            "<IHHHHIIH",
+            0x06054B50, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0)
+
+        with open(path, "wb") as f:
+            f.write(blob[:eocd])
+            f.write(zip64_eocd)
+            f.write(locator)
+            f.write(classic)
+    write("zip64-trailer.zip", build_zip64_trailer)
+
     # --- damage ---
     def build_truncated(path):
         source = os.path.join(OUT, "good-deflated.zip")

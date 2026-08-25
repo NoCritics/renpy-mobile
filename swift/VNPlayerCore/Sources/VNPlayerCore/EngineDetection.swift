@@ -89,40 +89,44 @@ public enum EngineDetector {
     ///
     /// Picks the SHALLOWEST `game/`. A game that ships an example or a mod containing its
     /// own nested `game/` would otherwise be rooted at the wrong place.
+    ///
+    /// **Case-sensitive first, and that is not fussiness.** A very common distribution
+    /// layout is a wrapper folder literally named `Game/` containing the real `game/`:
+    ///
+    ///     Game/game/script.rpy
+    ///
+    /// A case-insensitive shallowest-match calls the wrapper the game directory, decides
+    /// the distribution root is "", and then extracts everything one level too deep --
+    /// producing `Game/game/...` on disk, which Ren'Py cannot load. Ren'Py itself always
+    /// writes the directory lowercase, so a case-sensitive pass finds the right one; the
+    /// insensitive pass remains as a fallback for archives repacked on a case-folding
+    /// filesystem, where the real directory may have been renamed.
     public static func distributionRoot(relativePaths: [String]) -> String? {
+        if let exact = shallowestRoot(relativePaths, caseSensitive: true) { return exact }
+        return shallowestRoot(relativePaths, caseSensitive: false)
+    }
+
+    private static func shallowestRoot(_ relativePaths: [String], caseSensitive: Bool) -> String? {
         var best: String?
         var bestDepth = Int.max
 
         for path in relativePaths {
             let components = path.split(separator: "/").map(String.init)
-            guard let index = components.firstIndex(where: { $0.lowercased() == "game" }) else { continue }
+            let index = components.firstIndex {
+                caseSensitive ? $0 == "game" : $0.lowercased() == "game"
+            }
+            guard let found = index else { continue }
 
-            let depth = index
-            if depth < bestDepth {
-                bestDepth = depth
-                best = components[0..<index].joined(separator: "/")
+            // A path that IS the game directory and nothing more tells us nothing about
+            // where the root is; we need something inside it.
+            guard found + 1 < components.count else { continue }
+
+            if found < bestDepth {
+                bestDepth = found
+                best = components[0..<found].joined(separator: "/")
             }
         }
 
         return best
-    }
-
-    /// The single top-level directory, when the archive has exactly one. Used for
-    /// `gameId` derivation.
-    public static func singleTopLevelDirectory(relativePaths: [String]) -> String? {
-        var roots = Set<String>()
-
-        for path in relativePaths {
-            guard let first = path.split(separator: "/").first else { continue }
-            roots.insert(String(first))
-            if roots.count > 1 { return nil }
-        }
-
-        guard roots.count == 1, let only = roots.first else { return nil }
-
-        // A single top-level *file* is not a directory root. If every path is exactly
-        // that one component, there is no directory to name the game after.
-        let hasChildren = relativePaths.contains { $0.split(separator: "/").count > 1 }
-        return hasChildren ? only : nil
     }
 }
