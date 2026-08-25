@@ -3,8 +3,10 @@ init python:
     import os
 
     def _vnplayer_tick():
-        import vnshell.lifecycle
-        vnshell.lifecycle.tick()
+        # NOTE: lifecycle.tick() is NOT called here any more. vnplayer_hook.rpe.py
+        # registers it for every game the engine loads, this shell project included, so
+        # calling it here too would drain the command spool twice per frame. This
+        # callback now carries only the shell project's own diagnostics.
 
         # SPIKE: drain anything Swift wrote, via the same transport the control proved.
         transport = getattr(store, "vnspike_transport", None)
