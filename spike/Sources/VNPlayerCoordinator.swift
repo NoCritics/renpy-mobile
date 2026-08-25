@@ -73,23 +73,70 @@ public final class VNPlayerCoordinator {
 
     /// The library needs key status so the document picker and alerts behave; the game
     /// needs SDL to have it back, because SDL reads input from the key window.
-    func setLibraryVisible(_ visible: Bool) {
+    /// The single place that decides what the window does.
+    ///
+    /// Three inputs rather than one boolean, because the states are genuinely three:
+    /// library up, game running with the overlay closed, and game running with the
+    /// overlay open. Collapsing them into "is the library visible" is what produced an
+    /// overlay that passed touches through while open — dismissing it by tapping outside
+    /// would also have advanced the game's dialogue.
+    func applyWindow(passthrough: Bool, showHandle: Bool, makeKey: Bool) {
         guard let window else { return }
 
-        // Passthrough is only wanted while a game is running. With the library up the
-        // window is opaque and must absorb touches, or taps on empty library space would
-        // reach the game behind it.
-        window.passthroughEnabled = !visible
+        window.passthroughEnabled = passthrough
         (window.rootViewController as? VNPlayerRootViewController)?
-            .setReturnButtonVisible(!visible)
+            .setHandleVisible(showHandle)
 
-        if visible {
+        if makeKey {
             window.makeKey()
         } else {
             // Handing key back to SDL's window explicitly rather than merely resigning:
             // resignKey alone can leave the scene with no key window at all.
-            window.windowScene?.windows.first { $0 !== window }?.makeKey()
+            sdlWindow?.makeKey()
         }
+    }
+
+    /// SDL's own window — the one below ours on the same scene.
+    private var sdlWindow: UIWindow? {
+        window?.windowScene?.windows.first { $0 !== window }
+    }
+
+    /// The view Ren'Py renders into.
+    private var sdlContentView: UIView? {
+        sdlWindow?.rootViewController?.view ?? sdlWindow
+    }
+
+    private var originalSDLTransform: CATransform3D?
+
+    /// Scales and pans what the engine drew, without telling the engine.
+    ///
+    /// Applied to SDL's view, never to Ren'Py: games position their UI with hardcoded
+    /// pixel geometry, so changing font size clips dialogue out of its own box and breaks
+    /// custom screens. Scaling the rendered output cannot break a layout the game never
+    /// learns about — at the cost of being a viewport zoom of a rasterised texture, so
+    /// small text gets bigger AND softer.
+    ///
+    /// The original transform is saved on first use rather than assumed to be identity:
+    /// SDL may already be transforming its view for orientation, and overwriting that
+    /// with identity would be a rotation bug that only appears on some devices.
+    func applyMagnification(scale: CGFloat, offset: CGSize) {
+        guard let view = sdlContentView else { return }
+
+        if originalSDLTransform == nil {
+            originalSDLTransform = view.layer.transform
+        }
+
+        guard scale > 1.001 else {
+            if let original = originalSDLTransform {
+                view.layer.transform = original
+            }
+            return
+        }
+
+        let base = originalSDLTransform ?? CATransform3DIdentity
+        var transform = CATransform3DScale(base, scale, scale, 1)
+        transform = CATransform3DTranslate(transform, offset.width, offset.height, 0)
+        view.layer.transform = transform
     }
 }
 
@@ -197,33 +244,40 @@ public final class VNPlayerRootViewController: UIViewController {
     private func buildReturnButton() {
         let button = UIButton(type: .system)
         button.setImage(
-            UIImage(systemName: "books.vertical.fill",
-                    withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold)),
+            UIImage(systemName: "chevron.compact.left",
+                    withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold)),
             for: .normal)
-        button.tintColor = UIColor.white.withAlphaComponent(0.9)
-        button.backgroundColor = UIColor.black.withAlphaComponent(0.4)
-        button.layer.cornerRadius = 22
+        button.tintColor = UIColor.white.withAlphaComponent(0.75)
+        button.backgroundColor = UIColor.black.withAlphaComponent(0.35)
+        button.layer.cornerRadius = 10
+        button.layer.maskedCorners = [.layerMinXMinYCorner, .layerMinXMaxYCorner]
         button.translatesAutoresizingMaskIntoConstraints = false
         button.addTarget(self, action: #selector(returnToLibraryTapped), for: .touchUpInside)
         button.isHidden = true
 
         view.addSubview(button)
         NSLayoutConstraint.activate([
-            button.widthAnchor.constraint(equalToConstant: 44),
-            button.heightAnchor.constraint(equalToConstant: 44),
-            button.topAnchor.constraint(equalTo: view.topAnchor, constant: 6),
-            button.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -6),
+            // A tab docked to the right edge rather than a button floating in the
+            // corner: narrower, so it covers less of the game, and unmistakably an
+            // affordance rather than part of whatever is being played.
+            button.widthAnchor.constraint(equalToConstant: 26),
+            button.heightAnchor.constraint(equalToConstant: 64),
+            button.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            button.centerYAnchor.constraint(equalTo: view.centerYAnchor),
         ])
 
         returnButton = button
     }
 
     @objc private func returnToLibraryTapped() {
-        model.returnToLibrary()
+        // Opens the overlay now; quitting is one of the controls inside it. The handle
+        // used to quit directly, which meant a single mistap threw the reader out of
+        // their game with no confirmation.
+        model.openOverlay()
     }
 
     /// Shown only while a game is running; the library has its own navigation.
-    func setReturnButtonVisible(_ visible: Bool) {
+    func setHandleVisible(_ visible: Bool) {
         returnButton?.isHidden = !visible
     }
 

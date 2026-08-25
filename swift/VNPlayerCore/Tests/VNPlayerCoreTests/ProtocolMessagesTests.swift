@@ -48,6 +48,69 @@ final class ProtocolMessagesTests: XCTestCase {
         XCTAssertEqual(args["gameId"] as? String, "月に寄りそう")
     }
 
+    func testEveryControlCommandUsesTheNameArgsShape() throws {
+        // All four M3 controls, checked the same way the launch command is. The shape is
+        // the thing that drifted before, and it drifted silently.
+        for name in [ProtocolMessages.CommandName.quickSave,
+                     ProtocolMessages.CommandName.quickLoad,
+                     ProtocolMessages.CommandName.rollback,
+                     ProtocolMessages.CommandName.toggleSkip] {
+            let message = ProtocolMessages.control(name, commandId: "abc")
+
+            XCTAssertNil(message["command"], "\(name) used a flat command key")
+            XCTAssertEqual(message["name"] as? String, name)
+
+            let args = try XCTUnwrap(message["args"] as? [String: Any], name)
+            XCTAssertEqual(args["commandId"] as? String, "abc", name)
+
+            // And it must survive the serialiser Spool actually uses.
+            let data = try JSONSerialization.data(withJSONObject: message)
+            XCTAssertGreaterThan(data.count, 0)
+        }
+    }
+
+    func testControlNamesMatchTheHandlersPythonRegisters() {
+        // These four strings are keys in vnshell.lifecycle._HANDLERS. If either side is
+        // renamed alone, the command is accepted by the spool and then reported as
+        // "this build does not understand" -- which is at least visible now, but should
+        // not happen.
+        XCTAssertEqual(ProtocolMessages.CommandName.quickSave, "quickSave")
+        XCTAssertEqual(ProtocolMessages.CommandName.quickLoad, "quickLoad")
+        XCTAssertEqual(ProtocolMessages.CommandName.rollback, "rollback")
+        XCTAssertEqual(ProtocolMessages.CommandName.toggleSkip, "toggleSkip")
+        XCTAssertEqual(ProtocolMessages.CommandName.quitToLibrary, "quitToLibrary")
+    }
+
+    func testEngineStateParsesFromItsEvent() throws {
+        let state = try XCTUnwrap(ProtocolMessages.EngineState(payload: [
+            "event": "engineState",
+            "canRollback": true,
+            "canSave": false,
+            "isSkipping": true,
+            "inGame": true,
+        ]))
+
+        XCTAssertTrue(state.canRollback)
+        XCTAssertFalse(state.canSave)
+        XCTAssertTrue(state.isSkipping)
+        XCTAssertTrue(state.inGame)
+    }
+
+    func testEngineStateRejectsOtherEvents() {
+        XCTAssertNil(ProtocolMessages.EngineState(payload: ["event": "gameReady"]))
+        XCTAssertNil(ProtocolMessages.EngineState(payload: [:]))
+    }
+
+    func testEngineStateDefaultsToEverythingDisabled() {
+        // A malformed or partial state must not enable controls. Greying out a control
+        // that would have worked is a small annoyance; offering one that cannot work is
+        // the failure this event exists to prevent.
+        let state = try? XCTUnwrap(
+            ProtocolMessages.EngineState(payload: ["event": "engineState"]))
+        XCTAssertEqual(state??.canRollback, false)
+        XCTAssertEqual(state??.canSave, false)
+    }
+
     func testEventParsing() {
         let parsed = ProtocolMessages.parseEvent(["event": "gameReady", "commandId": "abc"])
         XCTAssertEqual(parsed?.name, "gameReady")

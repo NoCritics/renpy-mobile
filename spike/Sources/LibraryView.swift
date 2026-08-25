@@ -29,19 +29,9 @@ struct LibraryView: View {
         }
     }
 
-    /// What the window shows while a game is running: nothing at all.
-    ///
-    /// `.allowsHitTesting(false)` is what actually lets touches reach the game. Without
-    /// it SwiftUI treats even `Color.clear` as hittable, the hosting view answers every
-    /// touch, and the game renders perfectly while receiving nothing.
-    ///
-    /// The way back to the library is NOT here. It is a real UIKit button owned by
-    /// VNPlayerRootViewController, because a SwiftUI button cannot be hit-tested apart
-    /// from the hosting view around it -- see buildReturnButton() for why that matters.
+    /// While a game runs, the overlay owns the window. See OverlayView.
     private var whilePlaying: some View {
-        Color.clear
-            .allowsHitTesting(false)
-            .ignoresSafeArea()
+        OverlayView(model: model)
     }
 
     private var isHidden: Bool {

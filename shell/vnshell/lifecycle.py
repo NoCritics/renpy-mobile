@@ -48,6 +48,19 @@ _EVENTS = SpoolEmitter("")
 _pending_command_id = None
 _announced = False
 
+# Commands pulled from the mailbox but not yet run.
+#
+# tick() used to dispatch a whole poll() batch inline, and any handler that restarts the
+# engine raises out of that loop -- silently discarding every command behind it. The
+# module note said this would become a real bug once a non-restarting handler landed, and
+# M3 is when they land. One command per tick, with the rest kept here, means a restart
+# costs nothing but a frame.
+_pending: list[Command] = []
+
+# Last engine-state snapshot sent to the native side, so unchanged state is not rewritten
+# sixty times a second.
+_last_state: dict | None = None
+
 
 def install(renpy_base: str) -> None:
     """Wire the shell into Ren'Py. Must run before bootstrap().
@@ -226,20 +239,54 @@ def tick() -> None:
 
         harness.start()
 
-    # NOTE: both current handlers restart the engine, i.e. raise UtterRestartException
-    # out of _dispatch. That aborts this loop, so any further commands already pulled
-    # from this poll() batch are silently dropped rather than deferred to next tick.
-    # Harmless today — a batch containing a restart command is expected to end the
-    # session anyway — but it will be a real bug once a non-restarting handler lands:
-    # queue remaining commands (or re-poll) instead of dropping them.
-    for command in mailbox_module.MAILBOX.poll():
-        _dispatch(command)
+    _publish_engine_state()
+
+    # Drain into the queue, then run exactly ONE. A handler that restarts the engine
+    # raises out of here, and anything still queued survives in _pending rather than
+    # being lost with the frame -- except across a restart, which clears the queue on
+    # purpose (see _restart).
+    _pending.extend(mailbox_module.MAILBOX.poll())
+
+    if _pending:
+        _dispatch(_pending.pop(0))
 
 
 def _dispatch(command: Command) -> None:
+    """Run one command.
+
+    **There is deliberately no `try/except Exception` around this call**, and the reason
+    is not obvious enough to leave unwritten.
+
+    Two consultation reviews recommended wrapping every handler, warning that Ren'Py uses
+    exceptions for control flow and a blanket catch would swallow rollback and load.
+    Checked against the source, that is backwards:
+
+        renpy/rollback.py:1185   RollbackException(BaseException)
+        renpy/rollback.py:1169   UnfreezeException(BaseException)
+        renpy/game.py:142        UtterRestartException(Exception)
+
+    Rollback and load derive from BaseException precisely so that ordinary handlers do
+    not eat them. The one that IS an Exception is ours -- `_restart()` raises it for
+    `launch` and `quitToLibrary`. A wrapper here would therefore leave rollback working
+    and silently break quit-to-library, the one control a stuck reader most needs.
+
+    Handlers wrap their own engine calls where it is safe (see `_handle_quick_save`), and
+    report refusals as events rather than raising.
+    """
+
     handler = _HANDLERS.get(command.name)
+
     if handler is None:
+        # Reported, not dropped. A command the shell does not recognise means the two
+        # sides disagree about the protocol, which has already cost this project one
+        # device round-trip -- and silence made it look like the channel was dead.
+        mailbox_module.MAILBOX._report(f"no handler for command {command.name!r}")
+        _emit_failed(
+            command.args.get("commandId"),
+            f"this build does not understand the command {command.name!r}",
+        )
         return
+
     handler(command)
 
 
@@ -342,6 +389,10 @@ def _restart() -> None:
 
     from vnshell import purge
 
+    # Commands queued behind a restart were aimed at the outgoing game. Carrying a
+    # rollback across a switch would apply it to whatever loads next.
+    _pending.clear()
+
     for action in purge.teardown_live_engine():
         print(f"[vnshell] teardown: {action}")
 
@@ -350,7 +401,164 @@ def _restart() -> None:
     raise renpy.game.UtterRestartException()
 
 
+def _emit_done(command_id, **extra) -> None:
+    payload = {"event": "commandDone", "commandId": command_id}
+    payload.update(extra)
+    _EVENTS.emit(payload)
+
+
+def _emit_failed(command_id, reason: str) -> None:
+    """Report a refusal in words a reader can act on.
+
+    Not an error channel: "you cannot save at the main menu" is a legitimate answer to a
+    save request, and the overlay renders it as a sentence. The alternative -- swallowing
+    it -- produces a button that sometimes does nothing, which is the worst option.
+    """
+
+    _EVENTS.emit({"event": "commandFailed", "commandId": command_id, "reason": reason})
+
+
+def _save_blocked_reason():
+    """Why saving is not allowed right now, or None if it is.
+
+    These four conditions are not invented. They mirror Ren'Py's own
+    FileSave.get_sensitive() (renpy/common/00action_file.rpy:421), which is the authority
+    on when the engine will accept a save. A consultation review recommended guarding with
+    renpy.can_save() instead -- that function does not exist in Ren'Py 8.5.3, which is why
+    this reads the same state Ren'Py's own save button reads.
+    """
+
+    import renpy  # type: ignore
+
+    try:
+        store = renpy.store  # type: ignore[attr-defined]
+
+        if getattr(store, "_in_replay", None):
+            return "you cannot save during a replay"
+        if getattr(store, "main_menu", False):
+            return "you cannot save from the main menu"
+        if not renpy.config.save:
+            return "this game has saving turned off"
+    except Exception as exc:  # noqa: BLE001
+        return f"could not check whether saving is allowed ({type(exc).__name__})"
+
+    return None
+
+
+QUICK_SLOT = "quick-1"
+
+
+def _handle_quick_save(command: Command) -> None:
+    command_id = command.args.get("commandId")
+
+    reason = _save_blocked_reason()
+    if reason:
+        return _emit_failed(command_id, reason)
+
+    import renpy  # type: ignore
+
+    # except Exception is safe HERE and only here: renpy.save does not use exceptions for
+    # control flow. It is not safe around rollback, load or quit -- see _dispatch.
+    try:
+        renpy.save(QUICK_SLOT, extra_info="Quick save")
+    except Exception as exc:  # noqa: BLE001
+        return _emit_failed(command_id, f"the save failed ({type(exc).__name__})")
+
+    _emit_done(command_id)
+
+
+def _handle_quick_load(command: Command) -> None:
+    command_id = command.args.get("commandId")
+
+    import renpy  # type: ignore
+
+    if not renpy.loadsave.can_load(QUICK_SLOT):
+        return _emit_failed(command_id, "there is no quick save to load")
+
+    # Deliberately NOT wrapped. renpy.load raises UnfreezeException to perform the load,
+    # and while that derives from BaseException (so except Exception would not catch it),
+    # relying on that subtlety in a handler is how the next person breaks it.
+    _emit_done(command_id)
+    renpy.load(QUICK_SLOT)
+
+
+def _handle_rollback(command: Command) -> None:
+    command_id = command.args.get("commandId")
+
+    import renpy  # type: ignore
+
+    if not renpy.can_rollback():
+        # A real answer, not a failure: at the start of a game there is nothing behind you.
+        return _emit_failed(command_id, "there is nothing to roll back to")
+
+    _emit_done(command_id)
+    # Raises RollbackException (a BaseException) to do the work. Same reasoning as load:
+    # left unwrapped so the control flow is visible rather than implied.
+    renpy.rollback()
+
+
+def _handle_toggle_skip(command: Command) -> None:
+    command_id = command.args.get("commandId")
+
+    import renpy  # type: ignore
+
+    try:
+        if renpy.config.skipping:
+            renpy.config.skipping = None
+            skipping = False
+        else:
+            renpy.config.skipping = "slow"
+            skipping = True
+        renpy.restart_interaction()
+    except Exception as exc:  # noqa: BLE001
+        return _emit_failed(command_id, f"could not change skipping ({type(exc).__name__})")
+
+    _emit_done(command_id, isSkipping=skipping)
+
+
+def _publish_engine_state() -> None:
+    """Tell the overlay what the engine will currently accept.
+
+    Without this every control looks available whether or not it will work, and the
+    reader learns which ones are real by tapping them and reading refusals. Raised in
+    review, and it is the difference between an overlay that feels solid and one that
+    feels broken.
+
+    Emitted only on CHANGE. This runs every frame, and a spool file per frame would be
+    both pointless and a genuine IO problem on a phone.
+    """
+
+    global _last_state
+
+    if not _EVENTS.directory:
+        return
+
+    import renpy  # type: ignore
+
+    try:
+        state = {
+            "canRollback": bool(renpy.can_rollback()),
+            "canSave": _save_blocked_reason() is None,
+            "isSkipping": bool(renpy.config.skipping),
+            "inGame": STATE.current_game_id is not None,
+        }
+    except Exception:  # noqa: BLE001
+        # The engine is mid-restart or otherwise not answering. Saying nothing is right:
+        # the overlay keeps its last known state rather than flickering everything off.
+        return
+
+    if state == _last_state:
+        return
+
+    _last_state = state
+    _EVENTS.emit({"event": "engineState", **state})
+
+
 _HANDLERS = {
     "launch": _handle_launch,
     "quitToLibrary": _handle_quit_to_library,
+    "quickSave": _handle_quick_save,
+    "quickLoad": _handle_quick_load,
+    "rollback": _handle_rollback,
+    "toggleSkip": _handle_toggle_skip,
 }

@@ -29,6 +29,10 @@ public enum ProtocolMessages {
     public enum CommandName {
         public static let launch = "launch"
         public static let quitToLibrary = "quitToLibrary"
+        public static let quickSave = "quickSave"
+        public static let quickLoad = "quickLoad"
+        public static let rollback = "rollback"
+        public static let toggleSkip = "toggleSkip"
     }
 
     public enum EventName {
@@ -36,6 +40,37 @@ public enum ProtocolMessages {
         public static let gameReady = "gameReady"
         public static let shellReady = "shellReady"
         public static let launchFailed = "launchFailed"
+        public static let commandDone = "commandDone"
+        public static let commandFailed = "commandFailed"
+        public static let engineState = "engineState"
+    }
+
+    /// What the engine will currently accept, so the overlay can grey out controls
+    /// instead of offering them and then reporting a refusal.
+    public struct EngineState: Equatable {
+        public var canRollback = false
+        public var canSave = false
+        public var isSkipping = false
+        public var inGame = false
+
+        public init() {}
+
+        public init?(payload: [String: Any]) {
+            guard payload[Key.event] as? String == EventName.engineState else { return nil }
+            canRollback = payload["canRollback"] as? Bool ?? false
+            canSave = payload["canSave"] as? Bool ?? false
+            isSkipping = payload["isSkipping"] as? Bool ?? false
+            inGame = payload["inGame"] as? Bool ?? false
+        }
+    }
+
+    /// Every control command has the same shape, so build them the same way. A per-control
+    /// literal is how the launch payload drifted from what Python read.
+    public static func control(_ name: String, commandId: String) -> [String: Any] {
+        [
+            Key.name: name,
+            Key.args: [Key.commandId: commandId],
+        ]
     }
 
     public static func launch(commandId: String, gameId: String, basedir: String) -> [String: Any] {
