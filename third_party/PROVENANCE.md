@@ -20,10 +20,16 @@ compares our copy against upstream.
 | Licence | MIT — `third_party/ZIPFoundation-LICENSE` |
 | Vendored | 2026-08-25 |
 | Location | `swift/VNPlayerCore/Sources/ZIPFoundation/` (21 `.swift` files) |
-| Tree SHA-256 | `d69749d12cf8c99fe7cd3a8c1dc4d47e5de79c280516fb95bb04d8a079a55237` |
+| Tree SHA-256 | `cdda661e7969435b396425f33b13430a0993d3fe1bb57c4f5cb7f67c4b84b675` |
 
 The tree hash is over the 21 `.swift` files, sorted by name, each contributing its
-basename followed by its bytes. `scripts/verify_third_party.sh` computes it the same way.
+basename followed by its bytes **with CRLF normalised to LF**.
+`scripts/verify_third_party.sh` computes it the same way.
+
+The normalisation is load-bearing. Git rewrites line endings on checkout depending on
+platform and configuration, so a hash over raw bytes would describe the checkout rather
+than the source: it would pass on the machine that generated it and fail in CI, for a
+reason having nothing to do with whether the dependency had been tampered with.
 
 ### Why this and not a hand-written ZIP reader
 

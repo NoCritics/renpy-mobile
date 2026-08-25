@@ -71,7 +71,13 @@ if not files:
 digest = hashlib.sha256()
 for path in files:
     digest.update(os.path.basename(path).encode())
-    digest.update(open(path, "rb").read())
+    # Line endings are normalised before hashing. Git rewrites CRLF to LF on checkout
+    # depending on platform and config, so a hash over raw bytes would be a hash of the
+    # checkout rather than of the source -- it would pass on the machine that generated
+    # it and fail everywhere else, including CI. That is worse than no check, because it
+    # fails for a reason unrelated to the thing being verified.
+    blob = open(path, "rb").read().replace(bytes([13, 10]), bytes([10]))
+    digest.update(blob)
 
 sys.stdout.write(digest.hexdigest())
 PYEOF
