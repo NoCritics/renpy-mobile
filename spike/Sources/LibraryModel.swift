@@ -19,7 +19,16 @@ final class LibraryModel: ObservableObject {
     @Published var phase: LibraryPhase = .idle
     @Published var errorMessage: String?
     @Published var noticeMessage: String?
-    @Published var showImporter = false
+
+    enum PickerPurpose { case game, saves }
+
+    /// What the open file picker is for. Deliberately NOT @Published and never bound to
+    /// the view: SwiftUI clears an isPresented binding as it dismisses, and if the
+    /// purpose rode on that binding the completion handler could read it after it had
+    /// already been reset.
+    private var pickerPurpose: PickerPurpose = .game
+
+    @Published var showPicker = false
     /// Pruning saves 100-200 MB per game, and is the default. Exposed because a user who
     /// wants the whole distribution should be able to say so.
     @Published var pruneDesktopFiles = true
@@ -58,7 +67,6 @@ final class LibraryModel: ObservableObject {
     }
 
     @Published var pendingSaveImport: ImportConfirmation?
-    @Published var showSaveImporter = false
 
     struct GameChoice: Identifiable {
         let id = UUID()
@@ -202,32 +210,46 @@ final class LibraryModel: ObservableObject {
         // SwiftUI fileImporter that silently never appears again: the binding is already
         // true, so setting it true changes nothing, and the dismissal that follows leaves
         // it false with no sheet. Reported from the device as "needs repeated attempts".
-        guard !showImporter else {
-            print("[vnspike] importer: already open, ignoring")
+        guard !showPicker else {
+            NSLog("[vnspike] importer: already open, ignoring")
             return
         }
 
+        pickerPurpose = .game
+
         // Argument-free: on iOS only NSLog lines with no formatted value survive the USB
-        // relay intact, measured in Milestone B. These three lines are what distinguish
-        // "the picker never opened" from "it opened and the provider listed nothing",
-        // which are different bugs with different owners.
-        print("[vnspike] importer: opening")
-        showImporter = true
+        // relay intact, measured in Milestone B. `print` does NOT reach the device log at
+        // all for a sideloaded app -- it writes to stdout, which the device log never
+        // sees -- which is why this line and its siblings below use NSLog instead. These
+        // lines are what distinguish "the picker never opened" from "it opened and the
+        // provider listed nothing", which are different bugs with different owners.
+        NSLog("[vnspike] importer: opening")
+        showPicker = true
+    }
+
+    /// The single `.fileImporter`'s completion handler routes here, and dispatches on
+    /// `pickerPurpose` to whichever picker actually opened it. See `pickerPurpose`'s
+    /// comment for why that routing cannot ride on the presentation binding itself.
+    func handlePickedFile(_ result: Result<[URL], Error>) {
+        switch pickerPurpose {
+        case .game: handlePicked(result)
+        case .saves: handlePickedSave(result)
+        }
     }
 
     func handlePicked(_ result: Result<[URL], Error>) {
         switch result {
         case .failure(let error):
-            print("[vnspike] importer: failed")
+            NSLog("[vnspike] importer: failed")
             errorMessage = error.localizedDescription
         case .success(let urls):
             guard let url = urls.first else {
                 // The picker returned success with nothing in it. Not a state that should
                 // occur, and silence here would look exactly like a dead button.
-                print("[vnspike] importer: returned no file")
+                NSLog("[vnspike] importer: returned no file")
                 return
             }
-            print("[vnspike] importer: picked a file")
+            NSLog("[vnspike] importer: picked a file")
             importArchive(at: url)
         }
     }
@@ -676,10 +698,11 @@ extension LibraryModel {
     // MARK: Save import
 
     func beginSaveImport(into hint: LibraryEntry? = nil) {
-        guard !showSaveImporter else { return }
+        guard !showPicker else { return }
         importHint = hint
-        print("[vnspike] save import: opening")
-        showSaveImporter = true
+        pickerPurpose = .saves
+        NSLog("[vnspike] save import: opening")
+        showPicker = true
     }
 
     func handlePickedSave(_ result: Result<[URL], Error>) {

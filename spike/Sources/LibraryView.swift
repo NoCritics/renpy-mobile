@@ -15,46 +15,42 @@ struct LibraryView: View {
             }
         }
         .animation(.default, value: isHidden)
+        // I5/I11: exactly one modifier of each presentation kind. `.fileImporter` is
+        // implemented on top of `.sheet`, and two of them on the same view meant only the
+        // later one could ever present -- the earlier one (Add game) flipped its state and
+        // showed nothing. Likewise two `.alert(item:)` meant only one alert could ever
+        // fire. See LibraryModel.PickerPurpose and ActiveAlert below.
         .fileImporter(
-            isPresented: $model.showImporter,
+            isPresented: $model.showPicker,
             allowedContentTypes: Self.importableTypes,
             allowsMultipleSelection: false
         ) { result in
-            model.handlePicked(result)
+            model.handlePickedFile(result)
         }
-        // I5: one alert now serves import, export, backup and the game chooser, so a
-        // title naming only one of them was actively wrong for the other three -- she
-        // taps "Back up saves", something goes wrong, and the box reads "Import failed".
-        .alert("That didn't work", isPresented: errorBinding) {
-            Button("OK", role: .cancel) { model.errorMessage = nil }
-        } message: {
-            Text(model.errorMessage ?? "")
-        }
-        .alert(item: $model.pendingExport) { confirmation in
-            Alert(title: Text(confirmation.title),
-                  message: Text(confirmation.message),
-                  primaryButton: .default(Text("Export")) { model.performExport() },
-                  secondaryButton: .cancel())
+        .alert(item: activeAlert) { alert in
+            switch alert {
+            case .failure(let message):
+                return Alert(title: Text("That didn't work"),
+                              message: Text(message),
+                              dismissButton: .cancel(Text("OK")) { model.errorMessage = nil })
+            case .export(let confirmation):
+                return Alert(title: Text(confirmation.title),
+                              message: Text(confirmation.message),
+                              primaryButton: .default(Text("Export")) { model.performExport() },
+                              secondaryButton: .cancel())
+            case .importSaves(let confirmation):
+                return Alert(title: Text("Import saves"),
+                              message: Text([confirmation.message, confirmation.warning]
+                                                .compactMap { $0 }.joined(separator: "\n\n")),
+                              primaryButton: .default(Text("Import")) { model.performSaveImport() },
+                              secondaryButton: .cancel())
+            }
         }
         .sheet(isPresented: Binding(
             get: { model.shareURL != nil },
             set: { if !$0 { model.dismissShare() } })
         ) {
             if let url = model.shareURL { ShareSheet(url: url) }
-        }
-        .fileImporter(
-            isPresented: $model.showSaveImporter,
-            allowedContentTypes: Self.importableTypes,
-            allowsMultipleSelection: false
-        ) { result in
-            model.handlePickedSave(result)
-        }
-        .alert(item: $model.pendingSaveImport) { confirmation in
-            Alert(title: Text("Import saves"),
-                  message: Text([confirmation.message, confirmation.warning]
-                                    .compactMap { $0 }.joined(separator: "\n\n")),
-                  primaryButton: .default(Text("Import")) { model.performSaveImport() },
-                  secondaryButton: .cancel())
         }
         .confirmationDialog(
             "Which game are these saves for?",
@@ -119,11 +115,50 @@ struct LibraryView: View {
         return types.filter { seen.insert($0.identifier).inserted }
     }()
 
-    private var errorBinding: Binding<Bool> {
-        Binding(
-            get: { model.errorMessage != nil },
-            set: { if !$0 { model.errorMessage = nil } }
+    /// Which of the three alerts (if any) is currently showing, folded into one enum so
+    /// only one `.alert` modifier is ever needed. Precedence -- failure, then export, then
+    /// save import -- matters only on the vanishingly rare tick where more than one of the
+    /// three model properties is non-nil at once; on every ordinary path exactly one of
+    /// them is set at a time. A computed binding is enough here: there is no state to add
+    /// to the model, because the three source properties it derives from already exist and
+    /// already exclude each other in practice, and the setter below just clears whichever
+    /// one is showing.
+    private var activeAlert: Binding<ActiveAlert?> {
+        Binding<ActiveAlert?>(
+            get: {
+                if let message = model.errorMessage { return .failure(message) }
+                if let export = model.pendingExport { return .export(export) }
+                if let importConfirmation = model.pendingSaveImport {
+                    return .importSaves(importConfirmation)
+                }
+                return nil
+            },
+            set: { newValue in
+                guard newValue == nil else { return }
+                if model.errorMessage != nil { model.errorMessage = nil }
+                else if model.pendingExport != nil { model.pendingExport = nil }
+                else if model.pendingSaveImport != nil { model.pendingSaveImport = nil }
+            }
         )
+    }
+
+    /// One case per alert this view used to present as three separate `.alert` modifiers.
+    /// `id` is what `.alert(item:)` uses to detect "a different alert" and needs to
+    /// re-present; folding the message text into `.failure`'s id keeps two different
+    /// failures (unlikely to be back to back, but not impossible) from being treated as
+    /// the same alert.
+    private enum ActiveAlert: Identifiable {
+        case failure(String)
+        case export(LibraryModel.ExportConfirmation)
+        case importSaves(LibraryModel.ImportConfirmation)
+
+        var id: String {
+            switch self {
+            case .failure(let text): return "failure-\(text)"
+            case .export(let c): return "export-\(c.id)"
+            case .importSaves(let c): return "import-\(c.id)"
+            }
+        }
     }
 
     // MARK: - Content

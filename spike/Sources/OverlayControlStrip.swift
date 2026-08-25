@@ -97,7 +97,7 @@ final class OverlayControlStrip: UIView {
                 // it does not need a fifth. Show the label instead and say so in the log.
                 button.setTitle(String(item.accessibility.prefix(2)), for: .normal)
                 button.titleLabel?.font = .systemFont(ofSize: 11, weight: .semibold)
-                print("[vnspike] no SF Symbol named \(item.symbol) for \(item.id)")
+                NSLog("[vnspike] no SF Symbol named \(item.symbol) for \(item.id)")
             }
 
             button.tintColor = .white
