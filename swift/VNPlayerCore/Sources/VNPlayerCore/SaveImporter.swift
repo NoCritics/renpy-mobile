@@ -352,20 +352,36 @@ extension SaveImporter {
                 _ = try? archive.extract(entry) { buffer.append($0) }
                 data = buffer
             } else {
+                // A bare .save contains exactly one save: itself. Checking the name rather
+                // than reusing these bytes for whatever the plan asks for -- a hand-built
+                // plan with several placements would otherwise write one file's contents
+                // under several slot names, silently and without error.
+                guard placement.sourceName == source.lastPathComponent else {
+                    throw SaveTransferError.damagedFile(name: placement.sourceName)
+                }
                 data = (try? Data(contentsOf: source)) ?? Data()
             }
 
             let target = directory.appendingPathComponent(placement.destination.fileName)
 
-            // Belt and braces. SlotPlacement guarantees this path is free; if a bug ever
-            // made it otherwise, refusing is the only acceptable behaviour.
+            // Belt and braces, and deliberately redundant. SlotPlacement guarantees this
+            // path is free AT PLANNING TIME, but the reader's own game can autosave into
+            // it while the confirmation sheet is still on screen -- between plan() and
+            // apply() -- so this is a real race, not just defensive coding. Refusing is
+            // the only acceptable behaviour; overwriting what appeared in that window
+            // would be the exact bug this whole feature exists to prevent.
             guard !FileManager.default.fileExists(atPath: target.path) else {
-                throw SaveTransferError.writeFailed(name: placement.destination.fileName)
+                throw SaveTransferError.slotTakenSincePlanning(name: placement.destination.fileName)
             }
 
             do {
                 try data.write(to: target, options: .withoutOverwriting)
             } catch {
+                // The same race, losing a narrower photo finish: the explicit check above
+                // passed, but something claimed this path before the write below landed.
+                if FileManager.default.fileExists(atPath: target.path) {
+                    throw SaveTransferError.slotTakenSincePlanning(name: placement.destination.fileName)
+                }
                 throw SaveTransferError.writeFailed(name: placement.destination.fileName)
             }
 

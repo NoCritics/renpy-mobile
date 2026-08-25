@@ -171,4 +171,59 @@ final class SaveImporterApplyTests: XCTestCase {
             Data("BETA".utf8),
             "beta received alpha's bytes -- the last-component match is ambiguous")
     }
+
+    func testASaveWrittenBetweenPlanningAndApplyingIsNotOverwritten() throws {
+        // The autosave race, and the only path that reaches the never-overwrite guards.
+        // plan() sees an empty directory and plans 1-1-LT1.save into slot 1-1; the game
+        // then autosaves into that slot while the confirmation sheet is still up.
+        let source = try makeExport(names: ["1-1-LT1.save"])
+        let set = try SaveImporter.plan(source: source,
+                                        resolve: { _ in self.destination },
+                                        caps: .default)
+
+        let theirs = Data("WRITTEN WHILE THE SHEET WAS UP".utf8)
+        try theirs.write(to: destination.appendingPathComponent("1-1-LT1.save"))
+
+        XCTAssertThrowsError(
+            try SaveImporter.apply(set.plans[0], source: source, into: destination)
+        ) { error in
+            XCTAssertEqual(error as? SaveTransferError,
+                           .slotTakenSincePlanning(name: "1-1-LT1.save"))
+        }
+
+        XCTAssertEqual(
+            try Data(contentsOf: destination.appendingPathComponent("1-1-LT1.save")),
+            theirs,
+            "a save written after planning was overwritten -- the one unacceptable bug")
+    }
+
+    func testTwoPlacementsToTheSameSlotCannotDestroyTheFirst() throws {
+        // plan() never emits two placements at the same destination -- SlotPlacement
+        // guarantees each incoming save gets a free slot -- but SaveImportPlan and
+        // Placement are both public, so a hand-built plan can ask for exactly that. The
+        // write-time guards must refuse the second write rather than replace the first,
+        // even though plan() itself can never produce this shape.
+        let source = try makeExport(names: ["1-1-LT1.save", "1-2-LT1.save"])
+
+        let slot = SaveSlot(page: "1", number: 1)
+        let placements = [
+            Placement(sourceName: "1-1-LT1.save", destination: slot, movedToNewSlot: false),
+            Placement(sourceName: "1-2-LT1.save", destination: slot, movedToNewSlot: false),
+        ]
+        let plan = SaveImportPlan(gameId: "bigbaddogs", title: "Big Bad Dogs",
+                                  isForeign: false, placements: placements,
+                                  alreadyPresent: [], sourcePrefix: "saves")
+
+        XCTAssertThrowsError(
+            try SaveImporter.apply(plan, source: source, into: destination)
+        ) { error in
+            XCTAssertEqual(error as? SaveTransferError,
+                           .slotTakenSincePlanning(name: "1-1-LT1.save"))
+        }
+
+        XCTAssertEqual(
+            try Data(contentsOf: destination.appendingPathComponent("1-1-LT1.save")),
+            Data("contents of 1-1-LT1.save".utf8),
+            "the second placement overwrote the first -- destinations must never collide")
+    }
 }

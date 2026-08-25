@@ -266,12 +266,24 @@ final class SaveImporterPlanTests: XCTestCase {
     }
 
     func testADuplicateNameInTheManifestIsRefusedNotACrash() throws {
-        // Dictionary(uniqueKeysWithValues:) TRAPS on a duplicate key. `expected` in
-        // `verifyDigests` is built from the manifest inside a file the reader chose to
-        // open, so a hand-edited manifest naming the same file twice must be refused
-        // cleanly -- not crash the whole app. There is no way to "catch" a trap in
-        // Swift, so this test's real assertion is that calling `plan` here returns or
-        // throws at all rather than aborting the process.
+        // Dictionary(uniqueKeysWithValues:) TRAPS on a duplicate key, purely on the
+        // repeated name -- it does not matter that both entries below agree on the
+        // digest. `expected` in `verifyDigests` is built from a manifest inside a file
+        // the reader chose to open, so this shape must not crash the app.
+        //
+        // For THIS fixture the two duplicated entries are identical, so verifyDigests
+        // does not actually throw: the reverse-direction check collapses the repeated
+        // name through a Set, and `plan()` returns a plan normally. The `catch is
+        // SaveTransferError` branch below is therefore dead code for this input -- it is
+        // kept only so a future change that makes verifyDigests reject a duplicate
+        // manifest entry outright doesn't turn this test red for the wrong reason. The
+        // one thing this test actually proves is that calling `plan` here does not trap
+        // the process. There is no way to assert that positively other than by the test
+        // process still being alive afterwards to report a result: a Swift precondition
+        // failure aborts the process outright rather than throwing or reaching any catch
+        // clause, so no in-process assertion can distinguish "this was fixed" from "this
+        // run got lucky" -- it can only distinguish "did not crash" from "did crash",
+        // and only by virtue of the test finishing at all.
         let source = try makeExport(names: ["1-1-LT1.save"])
 
         let archive = try XCTUnwrap(try? Archive(url: source, accessMode: .update))
@@ -291,12 +303,12 @@ final class SaveImporterPlanTests: XCTestCase {
             newManifestData.subdata(in: Int(position)..<(Int(position) + size))
         }
 
-        // Must not trap. Either a plan comes back, or a SaveTransferError is thrown --
-        // anything else (including process death) is the bug this test exists to catch.
+        // Must not trap. A plan comes back for this exact fixture (see above); the catch
+        // is kept for a stricter future verifyDigests, not because it fires here.
         do {
             _ = try SaveImporter.plan(source: source, resolve: alwaysResolve, caps: .default)
         } catch is SaveTransferError {
-            // Refused cleanly. Also acceptable.
+            // Not reached by this fixture. Kept for generality only.
         }
     }
 

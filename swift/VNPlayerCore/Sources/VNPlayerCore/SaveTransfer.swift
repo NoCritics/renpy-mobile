@@ -122,6 +122,9 @@ public enum SaveTransferError: Error, Equatable {
     case damagedFile(name: String)
     case noSuchGame(String)
     case writeFailed(name: String)
+    /// A destination slot filled up between planning and applying -- typically the
+    /// reader's own game autosaving while the confirmation sheet was on screen.
+    case slotTakenSincePlanning(name: String)
 
     public var userMessage: String {
         switch self {
@@ -144,6 +147,9 @@ public enum SaveTransferError: Error, Equatable {
             return "These saves are for \(title), which isn't installed."
         case .writeFailed(let name):
             return "Could not write \(name). The device may be out of space."
+        case .slotTakenSincePlanning(let name):
+            return "Something changed while you were deciding, and \(name) is now in use. "
+                 + "Nothing was replaced. Try importing again."
         }
     }
 }
