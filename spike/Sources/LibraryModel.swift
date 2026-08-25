@@ -141,7 +141,7 @@ final class LibraryModel: ObservableObject {
 
                 let plan = try importer.plan(archiveURL: pickedURL, archiveFileName: fileName)
 
-                try Self.assertSpaceAvailable(for: plan, at: paths.documents)
+                try ImportSupport.assertSpaceAvailable(for: plan, at: paths.documents)
 
                 let taken = await MainActor.run { store.takenIds() }
                 let id = GameIdentityDeriver.uniqueId(plan.identity.id, taken: taken)
@@ -159,7 +159,7 @@ final class LibraryModel: ObservableObject {
 
                 try store.install(stagedAt: staging, as: id)
 
-                let size = Self.directorySize(paths.gameDirectory(id))
+                let size = ImportSupport.directorySize(paths.gameDirectory(id))
                 let entry = LibraryEntry(
                     id: id,
                     title: plan.identity.title,
@@ -191,33 +191,6 @@ final class LibraryModel: ObservableObject {
                 }
             }
         }
-    }
-
-    /// Refuses before writing rather than filling the disk and failing halfway. The
-    /// headroom is not superstition: iOS behaves badly at genuinely zero free space, and
-    /// the staging copy is moved rather than copied, so peak usage is one game's worth.
-    private static func assertSpaceAvailable(for plan: ImportPlan, at url: URL) throws {
-        let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-        guard let available = values?.volumeAvailableCapacityForImportantUsage else { return }
-
-        let headroom: Int64 = 256 * 1_048_576
-        let needed = plan.totalUncompressed + headroom
-
-        if available < needed {
-            throw ImportError.insufficientSpace(needed: needed, available: available)
-        }
-    }
-
-    private static func directorySize(_ url: URL) -> Int64 {
-        guard let enumerator = FileManager.default.enumerator(
-            at: url, includingPropertiesForKeys: [.fileSizeKey]) else { return 0 }
-
-        var total: Int64 = 0
-        for case let fileURL as URL in enumerator {
-            let values = try? fileURL.resourceValues(forKeys: [.fileSizeKey])
-            total += Int64(values?.fileSize ?? 0)
-        }
-        return total
     }
 
     // MARK: - Launch
@@ -336,5 +309,42 @@ final class LibraryModel: ObservableObject {
         } catch {
             errorMessage = "Could not delete \(entry.title)."
         }
+    }
+}
+
+/// Filesystem helpers used from the import task.
+///
+/// Deliberately OUTSIDE LibraryModel. They were static methods on it, and LibraryModel
+/// is @MainActor -- which makes its statics main-actor-isolated too, so calling them
+/// from the detached import task was an actor hop the compiler rightly refused. Moving
+/// them out is better than awaiting them: neither touches UI state, and hopping to the
+/// main actor to measure a directory would put filesystem work back on the thread the
+/// import exists to keep clear.
+enum ImportSupport {
+    /// Refuses before writing rather than filling the disk and failing halfway. The
+    /// headroom is not superstition: iOS behaves badly at genuinely zero free space, and
+    /// the staging copy is moved rather than copied, so peak usage is one game's worth.
+    static func assertSpaceAvailable(for plan: ImportPlan, at url: URL) throws {
+        let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        guard let available = values?.volumeAvailableCapacityForImportantUsage else { return }
+
+        let headroom: Int64 = 256 * 1_048_576
+        let needed = plan.totalUncompressed + headroom
+
+        if available < needed {
+            throw ImportError.insufficientSpace(needed: needed, available: available)
+        }
+    }
+
+    static func directorySize(_ url: URL) -> Int64 {
+        guard let enumerator = FileManager.default.enumerator(
+            at: url, includingPropertiesForKeys: [.fileSizeKey]) else { return 0 }
+
+        var total: Int64 = 0
+        for case let fileURL as URL in enumerator {
+            let values = try? fileURL.resourceValues(forKeys: [.fileSizeKey])
+            total += Int64(values?.fileSize ?? 0)
+        }
+        return total
     }
 }
