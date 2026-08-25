@@ -80,6 +80,8 @@ public final class VNPlayerCoordinator {
         // window is opaque and must absorb touches, or taps on empty library space would
         // reach the game behind it.
         window.passthroughEnabled = !visible
+        (window.rootViewController as? VNPlayerRootViewController)?
+            .setReturnButtonVisible(!visible)
 
         if visible {
             window.makeKey()
@@ -137,6 +139,7 @@ public final class VNPlayerRootViewController: UIViewController {
 
     private let model: LibraryModel
     private(set) var hostingView: UIView?
+    private weak var returnButton: UIButton?
 
     init(model: LibraryModel) {
         self.model = model
@@ -168,7 +171,60 @@ public final class VNPlayerRootViewController: UIViewController {
         (view.window as? PassthroughWindow)?.contentView = host.view
         hostingView = host.view
 
+        buildReturnButton()
+
         model.presenter = self
+    }
+
+    /// The way back to the library, as a real UIKit button rather than a SwiftUI one.
+    ///
+    /// This is not a style preference, it is the only thing that works. `UIHostingController`'s
+    /// view does its own internal hit-testing and returns **itself** for every point --
+    /// a SwiftUI `Button` is not a separate `UIView`, it is a region the hosting view
+    /// handles internally. So `PassthroughWindow.hitTest` cannot tell "over the button"
+    /// from "over empty space" by view identity: both come back as the hosting view.
+    /// Rejecting the hosting view to let touches through therefore rejected the button
+    /// too, and it rendered perfectly while being completely inert.
+    ///
+    /// A UIKit button IS a distinct view, so `super.hitTest` returns the button over the
+    /// button and the hosting view everywhere else, and identity separates them cleanly.
+    ///
+    /// The generalisation for M3, which will have several controls: give each interactive
+    /// island its own small hosting controller, sized to the control, added as a sibling
+    /// above the full-screen backdrop. Then the same identity rule works -- the
+    /// full-screen hosting view is the backdrop and is rejected, while each island's
+    /// hosting view is a distinct view that is not.
+    private func buildReturnButton() {
+        let button = UIButton(type: .system)
+        button.setImage(
+            UIImage(systemName: "books.vertical.fill",
+                    withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold)),
+            for: .normal)
+        button.tintColor = UIColor.white.withAlphaComponent(0.9)
+        button.backgroundColor = UIColor.black.withAlphaComponent(0.4)
+        button.layer.cornerRadius = 22
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.addTarget(self, action: #selector(returnToLibraryTapped), for: .touchUpInside)
+        button.isHidden = true
+
+        view.addSubview(button)
+        NSLayoutConstraint.activate([
+            button.widthAnchor.constraint(equalToConstant: 44),
+            button.heightAnchor.constraint(equalToConstant: 44),
+            button.topAnchor.constraint(equalTo: view.topAnchor, constant: 6),
+            button.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -6),
+        ])
+
+        returnButton = button
+    }
+
+    @objc private func returnToLibraryTapped() {
+        model.returnToLibrary()
+    }
+
+    /// Shown only while a game is running; the library has its own navigation.
+    func setReturnButtonVisible(_ visible: Bool) {
+        returnButton?.isHidden = !visible
     }
 
     /// Must agree with SDL's mask or iOS raises UIApplicationInvalidInterfaceOrientation
