@@ -13,30 +13,43 @@ Milestone B merge.
 
 ## The build to install
 
-**Run `32840376120`**, branch `milestone-c/library-and-import`, artifact `VNPlayer-ipa`
-(28,725,459 bytes). Sideloadly as usual — `docs/INSTALL.md`.
+**Run `32849904189`**, branch `milestone-c/library-and-import`, artifact `VNPlayer-ipa`
+(28,725,821 bytes). Sideloadly as usual — `docs/INSTALL.md`.
 
 ## What to check, in order
 
-M3 is untested on hardware, so this is the first pass over it.
+M3's first device pass found two bugs (both fixed, below). This build has the redesigned
+controls and has NOT been tested on hardware.
 
-1. **Launch a game.** On the *first* game after installing, the overlay opens by itself
-   with a one-line hint — that is deliberate, so the handle is discoverable.
-2. **The handle.** A narrow tab on the right edge, vertically centred. Tapping it opens
-   the control strip. It should not interfere with playing.
-3. **Each control**: Roll back, Quick save, Quick load, Skip, Magnify, Back to library,
-   Close. Greyed-out controls are the engine saying it will not accept them right now —
-   that is the `engineState` event working, not a bug.
-4. **Refusal messages.** If a control does nothing, the strip should say why in a
-   sentence ("there is nothing to roll back to"). **A control that silently does nothing
-   is the finding** — quote what you saw.
-5. **Magnifier**: pinch/step the zoom, drag to pan, Done to exit. Two things to watch —
-   does the game still respond correctly *after* exiting, and does panning ever scroll the
-   dialogue backwards (it must not; that would mean touches are reaching SDL).
-6. **Back to library**, then launch again. Saves must survive.
+1. **Launch a game.** A column of icons should sit on the right edge: roll back, quick
+   save, quick load, skip, magnify, back to library. It fades to a quarter opacity after
+   four seconds and wakes when touched.
+2. **Roll back and Quick save should now be ENABLED** where the engine allows them. They
+   were permanently greyed before — that was the `renpy.exports` bug, not the engine
+   refusing.
+3. **Skip should no longer report an AttributeError.**
+4. **Roll back and Quick load actually work.** Both were previously guaranteed to throw
+   uncaught into Ren'Py's frame loop; neither had been tapped yet.
+5. **Refusal messages** appear as a caption beside the strip. A control that does nothing
+   and says nothing is the finding.
+6. **Magnifier**: zoom, pan, Done. Watch whether the game still responds correctly after
+   exiting, and whether panning ever scrolls dialogue backwards (it must not).
 
-Log capture: `bash scripts/ios/device_log.sh 30`. Add `-a` to greps if it reports
-"binary file matches" — game output can contain non-UTF-8 bytes.
+## The bug worth remembering
+
+**`renpy` inside a `.rpy` file is `renpy.exports`, not the `renpy` package.**
+`renpy/defaultstore.py:481` does `globals()["renpy"] = renpy.exports`. So every example in
+Ren'Py's documentation writes `renpy.save(...)`, and the same line fails from a plain
+Python module: `import renpy` yields the package, which has `config`, `game` and
+`loadsave` but none of `save`, `load`, `rollback`, `can_rollback`, `restart_interaction`
+or `music`.
+
+It produced two symptoms that looked unrelated — skip working while reporting
+AttributeError, and Roll back plus Quick save permanently greyed — and would have thrown
+uncaught from rollback and quickLoad. All call sites now go through `lifecycle._api()`.
+`tests/test_renpy_api.py` guards it against the real SDK export list, because a mocked
+`renpy` cannot: the first version had passing tests whose fake was built to match the
+same wrong assumption.
 
 ## Settled by measurement
 
@@ -58,7 +71,9 @@ pausing means commands are never read — the app hangs with no error at all.
 **`UIHostingController`'s view answers every hit test itself.** A SwiftUI `Button` is not a
 separate `UIView`, so a passthrough window cannot tell "over a control" from "over empty
 space" by identity. Any control that must be tappable *while touches pass through* has to
-be a real UIKit view. This cost a round-trip and would have cost another in M3.
+be a real UIKit view. This is why the control strip is `OverlayControlStrip` in UIKit and
+not SwiftUI: it is on screen permanently, so touches must pass around it permanently.
+SwiftUI is used only for the magnifier, where the window absorbs everything anyway.
 
 **The `.rpyc` magic does not distinguish Ren'Py 7 from 8.** Both write `RENPY RPC2`. Real
 signals are `renpy/vc_version.py` and `lib/py3-` vs `lib/py2-`.
@@ -76,11 +91,13 @@ working and silently breaks quit-to-library. There is deliberately no such wrapp
    no `@StateObject`, `LazyVGrid` or `.fileImporter`. Reverting costs a UI rewrite.
 3. **`Documents/` exposed to Files** — only `Games/` and `Saves/`; the index and IPC files
    live in `Library/Application Support/VNPlayer`.
-4. **The M3 summon gesture is a handle, not an edge swipe** — you confirmed this one.
+4. **The M3 controls are a permanent right-edge icon strip** that dims rather than hides
+   — your call, and it removed the summon-gesture problem entirely.
 
 ## Still open
 
-- M3 has no device testing at all yet.
+- The redesigned strip has not been on a device yet; items 1-6 above are its first pass.
+- Whether the magnifier leaves SDL in a good state after exiting.
 - **Cover art**, re-import/update, export saves, rename, settings: not built.
 - Ren'Py 7 support: refused with a message, by design.
 - `device_log.sh` should pass `-a` to grep; game output can be non-UTF-8 and the summary
