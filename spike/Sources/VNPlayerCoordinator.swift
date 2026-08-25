@@ -96,6 +96,22 @@ public final class VNPlayerCoordinator {
         }
     }
 
+    /// The strip lives on the root view controller, which owns the view hierarchy; the
+    /// model talks to the coordinator, which owns the window. These two forward across
+    /// that seam rather than handing the model a view controller to poke at.
+    private var rootController: VNPlayerRootViewController? {
+        window?.rootViewController as? VNPlayerRootViewController
+    }
+
+    func updateControls(canRollback: Bool, canSave: Bool, isSkipping: Bool) {
+        rootController?.updateControls(
+            canRollback: canRollback, canSave: canSave, isSkipping: isSkipping)
+    }
+
+    func showControlMessage(_ text: String) {
+        rootController?.showControlMessage(text)
+    }
+
     /// SDL's own window — the one below ours on the same scene.
     private var sdlWindow: UIWindow? {
         window?.windowScene?.windows.first { $0 !== window }
