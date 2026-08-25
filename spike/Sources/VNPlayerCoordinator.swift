@@ -103,9 +103,9 @@ public final class VNPlayerCoordinator {
         window?.rootViewController as? VNPlayerRootViewController
     }
 
-    func updateControls(canRollback: Bool, canSave: Bool, isSkipping: Bool, inMenu: Bool) {
+    func updateControls(canRollback: Bool, isSkipping: Bool, inMenu: Bool) {
         rootController?.updateControls(
-            canRollback: canRollback, canSave: canSave, isSkipping: isSkipping,
+            canRollback: canRollback, isSkipping: isSkipping,
             inMenu: inMenu)
     }
 
@@ -269,18 +269,14 @@ public final class VNPlayerRootViewController: UIViewController {
             .init(id: "library", symbol: "books.vertical",
                   accessibility: "Back to library") { [weak self] in self?.model.returnToLibrary() },
 
-            // Quick save and quick load, last and on their own.
-            //
-            // They sat second and third, next to roll back, and got read as file export
-            // and import -- which is exactly what their symbols said: `square.and.arrow.up`
-            // IS the iOS share glyph. Two problems, and the position was only one of them,
-            // so both are fixed: they moved to the bottom, and the share glyph is gone.
-            // Nothing here writes a file anywhere the reader can see; that is a separate
-            // feature that does not exist yet, and it must not be pre-announced by an icon.
-            .init(id: "quickSave", symbol: "arrow.down.to.line", accessibility: "Quick save",
-                  startsGroup: true) { [weak self] in self?.model.quickSave() },
-            .init(id: "quickLoad", symbol: "arrow.up.to.line",
-                  accessibility: "Quick load") { [weak self] in self?.model.quickLoad() },
+            // Save FILES, in and out. Quick save and quick load lived here and were read
+            // as file export and import; these are the real thing. Import returns to the
+            // library first -- writing save files under a live engine is the one version
+            // of this that can corrupt something (spec §4.1).
+            .init(id: "exportSaves", symbol: "square.and.arrow.up", accessibility: "Export saves",
+                  startsGroup: true) { [weak self] in self?.model.confirmExportCurrentGame() },
+            .init(id: "importSaves", symbol: "square.and.arrow.down",
+                  accessibility: "Import saves") { [weak self] in self?.model.importSavesFromStrip() },
         ])
 
         strip.isHidden = true
@@ -303,12 +299,10 @@ public final class VNPlayerRootViewController: UIViewController {
     /// Push the engine's own account of what it will accept.
     ///
     /// `inMenu` covers the game's own menu and its main menu alike. Rolling back or
-    /// skipping from a menu page means nothing, and quick save is already refused there
-    /// by `canSave`; leaving all three lit would offer the reader controls the engine has
-    /// already decided to turn down.
-    func updateControls(canRollback: Bool, canSave: Bool, isSkipping: Bool, inMenu: Bool) {
+    /// skipping from a menu page means nothing, so both are dimmed rather than left lit
+    /// for controls the engine has already decided to turn down.
+    func updateControls(canRollback: Bool, isSkipping: Bool, inMenu: Bool) {
         controlStrip?.setEnabled(canRollback && !inMenu, for: "rollback")
-        controlStrip?.setEnabled(canSave, for: "quickSave")
         controlStrip?.setEnabled(!inMenu, for: "skip")
         controlStrip?.setSymbol(isSkipping ? "forward.fill" : "forward", for: "skip")
     }

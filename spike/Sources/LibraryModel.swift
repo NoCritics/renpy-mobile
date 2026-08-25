@@ -48,6 +48,18 @@ final class LibraryModel: ObservableObject {
     @Published var pendingExport: ExportConfirmation?
     @Published var shareURL: URL?
 
+    struct ImportConfirmation: Identifiable {
+        let id = UUID()
+        let message: String
+        let warning: String?
+        let source: URL
+        let set: SaveImportPlanSet
+        let destinations: [URL]
+    }
+
+    @Published var pendingSaveImport: ImportConfirmation?
+    @Published var showSaveImporter = false
+
     var lastControlCommandId: String?
     var memoryWarningShown = false
     var commands: Spool? { commandSpool }
@@ -609,6 +621,134 @@ extension LibraryModel {
         (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0"
     }
 
+    /// Export the game that is running now.
+    ///
+    /// `LibraryPhase.playing` already carries the id (`LibraryModel.swift:12`), so there
+    /// is no second source of truth to keep in step with it.
+    func confirmExportCurrentGame() {
+        guard case .playing(let id) = phase,
+              let entry = entries.first(where: { $0.id == id })
+        else { return }
+        confirmExport(entry)
+    }
+
+    // MARK: Save import
+
+    func beginSaveImport() {
+        guard !showSaveImporter else { return }
+        print("[vnspike] save import: opening")
+        showSaveImporter = true
+    }
+
+    func handlePickedSave(_ result: Result<[URL], Error>) {
+        guard case .success(let urls) = result, let url = urls.first else { return }
+        guard let paths else { return }
+
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+
+        var destinations: [URL] = []
+
+        do {
+            let set = try SaveImporter.plan(source: url, resolve: { plan in
+                // §4.2: id first, then an exact single title match, then nothing.
+                let match = self.entries.first { $0.id == plan.gameId }
+                    ?? self.entries.first { $0.title == plan.title }
+                    ?? (plan.gameId == nil && self.entries.count == 1
+                        ? self.entries[0] : nil)
+                guard let match else { return nil }
+                let directory = paths.saveDirectory(match.id)
+                destinations.append(directory)
+                return directory
+            }, caps: .default)
+
+            guard !set.plans.isEmpty else {
+                errorMessage = set.missingGames.isEmpty
+                    ? "There was nothing to import."
+                    : "These saves are for \(set.missingGames.joined(separator: ", ")), "
+                      + "which isn't installed."
+                return
+            }
+
+            pendingSaveImport = ImportConfirmation(
+                message: Self.describe(set),
+                // Spec §6: one warning, inside this sheet, never a checkmark.
+                warning: set.isForeign
+                    ? "This file didn't come from VNPlayer. Ren'Py saves can contain "
+                      + "code, so only open it if you trust where it came from."
+                    : nil,
+                source: url,
+                set: set,
+                destinations: destinations)
+        } catch let error as SaveTransferError {
+            errorMessage = error.userMessage
+        } catch let error as ImportError {
+            errorMessage = error.userMessage
+        } catch {
+            errorMessage = "That file could not be read."
+        }
+    }
+
+    /// Render the plan. This IS the confirmation -- see spec §4.5.
+    static func describe(_ set: SaveImportPlanSet) -> String {
+        var lines: [String] = []
+
+        for plan in set.plans {
+            let into = plan.title.map { " into \($0)" } ?? ""
+            let fresh = plan.addedCount - plan.newSlotCount
+            var line = "Import \(plan.addedCount) saves\(into)?"
+            if fresh > 0 { line += " \(fresh) go into empty slots." }
+            if plan.newSlotCount > 0 { line += " \(plan.newSlotCount) into new slots." }
+            if !plan.alreadyPresent.isEmpty {
+                line += " \(plan.alreadyPresent.count) already here and will be skipped."
+            }
+            lines.append(line)
+        }
+
+        if !set.missingGames.isEmpty {
+            lines.append("Not installed, so skipped: "
+                         + set.missingGames.joined(separator: ", ") + ".")
+        }
+
+        lines.append("Nothing will be replaced.")
+        return lines.joined(separator: " ")
+    }
+
+    func performSaveImport() {
+        guard let confirmation = pendingSaveImport else { return }
+        pendingSaveImport = nil
+
+        let scoped = confirmation.source.startAccessingSecurityScopedResource()
+        defer { if scoped { confirmation.source.stopAccessingSecurityScopedResource() } }
+
+        var sentences: [String] = []
+
+        do {
+            for (index, plan) in confirmation.set.plans.enumerated() {
+                let result = try SaveImporter.apply(
+                    plan, source: confirmation.source,
+                    into: confirmation.destinations[index])
+                sentences.append(result.sentence)
+            }
+            noticeMessage = sentences.joined(separator: " ")
+        } catch let error as SaveTransferError {
+            errorMessage = error.userMessage
+        } catch {
+            errorMessage = "That import did not finish."
+        }
+    }
+
+    /// Import from the strip. Returns to the library first, then picks.
+    ///
+    /// Not caution: Ren'Py caches the slot list and holds the save directory open, so
+    /// writing files underneath a live engine leaves the game looking at saves that are
+    /// not there.
+    func importSavesFromStrip() {
+        coordinatorRef?.showControlMessage("Returning to the library to import saves.")
+        returnToLibrary()
+        beginSaveImport()
+    }
+
     // MARK: Opening and closing
 
     func enterMagnifier() {
@@ -648,7 +788,6 @@ extension LibraryModel {
         if isPlaying {
             coordinatorRef?.updateControls(
                 canRollback: engine.canRollback,
-                canSave: engine.canSave,
                 isSkipping: engine.isSkipping,
                 inMenu: engine.inMenu)
         }
@@ -695,7 +834,6 @@ extension LibraryModel {
                 engine = state
                 coordinatorRef?.updateControls(
                     canRollback: state.canRollback,
-                    canSave: state.canSave,
                     isSkipping: state.isSkipping,
                     inMenu: state.inMenu)
             }

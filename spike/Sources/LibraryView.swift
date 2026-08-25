@@ -39,6 +39,20 @@ struct LibraryView: View {
         ) {
             if let url = model.shareURL { ShareSheet(url: url) }
         }
+        .fileImporter(
+            isPresented: $model.showSaveImporter,
+            allowedContentTypes: Self.importableTypes,
+            allowsMultipleSelection: false
+        ) { result in
+            model.handlePickedSave(result)
+        }
+        .alert(item: $model.pendingSaveImport) { confirmation in
+            Alert(title: Text("Import saves"),
+                  message: Text([confirmation.message, confirmation.warning]
+                                    .compactMap { $0 }.joined(separator: "\n\n")),
+                  primaryButton: .default(Text("Import")) { model.performSaveImport() },
+                  secondaryButton: .cancel())
+        }
     }
 
     /// While a game runs, the overlay owns the window. See OverlayView.
@@ -72,6 +86,9 @@ struct LibraryView: View {
         }
         if let pkware = UTType("com.pkware.zip-archive") {
             types.append(pkware)
+        }
+        if let save = UTType(filenameExtension: "save") {
+            types.append(save)
         }
         // Distinct identifiers only; the picker treats a repeated type as a conflict.
         var seen = Set<String>()
@@ -254,6 +271,11 @@ struct LibraryView: View {
                                 model.confirmExport(entry)
                             } label: {
                                 Label("Export saves", systemImage: "square.and.arrow.up")
+                            }
+                            Button {
+                                model.beginSaveImport()
+                            } label: {
+                                Label("Import saves", systemImage: "square.and.arrow.down")
                             }
                             Button(role: .destructive) {
                                 model.delete(entry, includingSaves: false)
