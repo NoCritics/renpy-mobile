@@ -3,10 +3,81 @@ name: iOS build
 on:
   workflow_dispatch:
   push:
-    branches: [main, milestone-b, 'spike/**']
+    branches: [main, milestone-b, 'spike/**', 'milestone-c/**']
     tags: ['v*']
 
 jobs:
+  # The pure-logic Swift tests. Deliberately a SEPARATE job from the app build, and
+  # deliberately first: it needs no simulator, no signing and no renios prebuilts, so it
+  # finishes in a couple of minutes and catches extractor and library regressions long
+  # before the 20-minute archive would.
+  #
+  # `swift test` rather than `xcodebuild test`: VNPlayerCore is Foundation-only, so it
+  # builds and runs for macOS natively. Booting a simulator to run tests that never touch
+  # UIKit would add minutes and a whole class of flakiness for nothing.
+  core-tests:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: swift --version
+
+      - name: Assert the fixtures are present
+        # The tests XCTSkip a missing fixture rather than failing, so that a developer
+        # without them still gets a useful run. In CI a skip is indistinguishable from a
+        # pass in the summary, which would let the extractor tests quietly stop running.
+        # Count them here instead.
+        run: |
+          FIXTURES=swift/VNPlayerCore/Tests/VNPlayerCoreTests/Fixtures
+          COUNT=$(ls "$FIXTURES" | wc -l | tr -d ' ')
+          echo "$COUNT fixtures"
+          if [ "$COUNT" -lt 20 ]; then
+            echo "ASSERT FAILED: expected at least 20 fixtures, found $COUNT" >&2
+            echo "Regenerate with: python3 swift/VNPlayerCore/Tests/generate_fixtures.py" >&2
+            exit 1
+          fi
+
+      - name: Verify vendored third-party source is unmodified
+        run: bash scripts/verify_third_party.sh
+
+      - name: swift test
+        working-directory: swift/VNPlayerCore
+        run: swift test --enable-code-coverage 2>&1 | tee test-output.txt
+
+      - name: Assert tests actually ran
+        # `swift test` exits 0 when it runs zero tests, which is exactly what a broken
+        # resource path or a renamed target produces. A green tick over nothing is the
+        # failure mode this whole job exists to avoid.
+        working-directory: swift/VNPlayerCore
+        run: |
+          if ! grep -qE "Executed [0-9]+ test" test-output.txt; then
+            echo "ASSERT FAILED: no test summary in output" >&2
+            exit 1
+          fi
+          EXECUTED=$(grep -oE "Executed [0-9]+ test" test-output.txt | head -1 | grep -oE "[0-9]+")
+          echo "executed $EXECUTED tests"
+          if [ "$EXECUTED" -lt 40 ]; then
+            echo "ASSERT FAILED: only $EXECUTED tests ran; expected at least 40" >&2
+            exit 1
+          fi
+
+  # The Python shell-layer tests. Same reasoning: fast, and they gate the layer that
+  # decides where saves and logs go.
+  shell-tests:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: pytest
+        run: |
+          python -m pip install --quiet pytest
+          python -m pytest tests/ -v
+
   discover:
     runs-on: macos-15
     timeout-minutes: 90
