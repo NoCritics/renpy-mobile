@@ -247,28 +247,40 @@ public final class VNPlayerRootViewController: UIViewController {
     /// UIHostingController's view answers every hit test itself. See OverlayControlStrip.
     private func buildControlStrip() {
         let strip = OverlayControlStrip(items: [
+            // Reading. What the reader reaches for without looking away from the text.
             .init(id: "rollback", symbol: "arrow.uturn.backward",
                   accessibility: "Roll back") { [weak self] in self?.model.rollback() },
-            .init(id: "quickSave", symbol: "square.and.arrow.down",
-                  accessibility: "Quick save") { [weak self] in self?.model.quickSave() },
-            .init(id: "quickLoad", symbol: "square.and.arrow.up",
-                  accessibility: "Quick load") { [weak self] in self?.model.quickLoad() },
             .init(id: "skip", symbol: "forward",
                   accessibility: "Skip") { [weak self] in self?.model.toggleSkip() },
+
             // The game's OWN pages, not ours: every slot with its thumbnails, and the
-            // game's real settings. Quick save above writes one reserved slot and shows
-            // nothing; these are the only route to the rest on a phone, where there is no
-            // Escape key and a game's own quick-menu is often too small to hit.
+            // game's real settings. On a phone this is the only route to them -- there is
+            // no Escape key, and a game's own quick-menu is often too small to hit.
             .init(id: "menuSave", symbol: "tray.and.arrow.down", accessibility: "Save",
                   startsGroup: true) { [weak self] in self?.model.showMenu(.save) },
             .init(id: "menuLoad", symbol: "tray.and.arrow.up",
                   accessibility: "Load") { [weak self] in self?.model.showMenu(.load) },
             .init(id: "menuPreferences", symbol: "slider.horizontal.3",
                   accessibility: "Settings") { [weak self] in self?.model.showMenu(.preferences) },
+
+            // Leaving this screen.
             .init(id: "magnify", symbol: "plus.magnifyingglass", accessibility: "Magnify",
                   startsGroup: true) { [weak self] in self?.model.enterMagnifier() },
             .init(id: "library", symbol: "books.vertical",
                   accessibility: "Back to library") { [weak self] in self?.model.returnToLibrary() },
+
+            // Quick save and quick load, last and on their own.
+            //
+            // They sat second and third, next to roll back, and got read as file export
+            // and import -- which is exactly what their symbols said: `square.and.arrow.up`
+            // IS the iOS share glyph. Two problems, and the position was only one of them,
+            // so both are fixed: they moved to the bottom, and the share glyph is gone.
+            // Nothing here writes a file anywhere the reader can see; that is a separate
+            // feature that does not exist yet, and it must not be pre-announced by an icon.
+            .init(id: "quickSave", symbol: "arrow.down.to.line", accessibility: "Quick save",
+                  startsGroup: true) { [weak self] in self?.model.quickSave() },
+            .init(id: "quickLoad", symbol: "arrow.up.to.line",
+                  accessibility: "Quick load") { [weak self] in self?.model.quickLoad() },
         ])
 
         strip.isHidden = true

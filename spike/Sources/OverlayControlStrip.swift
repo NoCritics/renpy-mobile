@@ -22,9 +22,9 @@ final class OverlayControlStrip: UIView {
         let symbol: String
         let accessibility: String
         /// Draw a hairline above this icon. Nine icons in one unbroken column read as a
-        /// list to scan through; grouped, they read as a thing to use. The three groups
-        /// are reading (roll back, quick save, quick load, skip), the game's own pages
-        /// (save, load, settings), and leaving this screen (magnify, library).
+        /// list to scan through; grouped, they read as a thing to use. The four groups are
+        /// reading (roll back, skip), the game's own pages (save, load, settings), leaving
+        /// this screen (magnify, library), and the one-tap slot (quick save, quick load).
         let startsGroup: Bool
         let action: () -> Void
 
@@ -83,11 +83,23 @@ final class OverlayControlStrip: UIView {
             }
 
             let button = UIButton(type: .system)
-            button.setImage(
-                UIImage(systemName: item.symbol,
-                        withConfiguration: UIImage.SymbolConfiguration(
-                            pointSize: 16, weight: .medium)),
-                for: .normal)
+            let image = UIImage(systemName: item.symbol,
+                                withConfiguration: UIImage.SymbolConfiguration(
+                                    pointSize: 16, weight: .medium))
+
+            if let image {
+                button.setImage(image, for: .normal)
+            } else {
+                // A symbol name that does not exist on this iOS version returns nil, and
+                // setImage(nil:) leaves a button that is fully tappable and completely
+                // invisible -- the reader sees a gap where a control is. This project has
+                // shipped four separate versions of "renders as nothing, reports nothing";
+                // it does not need a fifth. Show the label instead and say so in the log.
+                button.setTitle(String(item.accessibility.prefix(2)), for: .normal)
+                button.titleLabel?.font = .systemFont(ofSize: 11, weight: .semibold)
+                print("[vnspike] no SF Symbol named \(item.symbol) for \(item.id)")
+            }
+
             button.tintColor = .white
             button.accessibilityLabel = item.accessibility
             button.translatesAutoresizingMaskIntoConstraints = false
@@ -133,7 +145,7 @@ final class OverlayControlStrip: UIView {
         holder.addSubview(line)
 
         NSLayoutConstraint.activate([
-            holder.heightAnchor.constraint(equalToConstant: 9),
+            holder.heightAnchor.constraint(equalToConstant: 6),
             holder.widthAnchor.constraint(equalToConstant: 40),
             line.centerYAnchor.constraint(equalTo: holder.centerYAnchor),
             line.centerXAnchor.constraint(equalTo: holder.centerXAnchor),
