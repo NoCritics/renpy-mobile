@@ -14,7 +14,7 @@ on `milestone-d/save-transfer`; `main` is still at the Milestone B merge.
 
 ## The build to install
 
-**Run `32889818351`**, branch `main`, artifact `VNPlayer-ipa` (28,813,221 bytes).
+**Run `32892531756`**, branch `main`, artifact `VNPlayer-ipa` (28,810,491 bytes).
 Sideloadly as usual — `docs/INSTALL.md`.
 
 That size is worth knowing: a `main` build that comes back around **27.5 MB** is stock
