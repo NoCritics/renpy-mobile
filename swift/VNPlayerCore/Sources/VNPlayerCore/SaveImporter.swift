@@ -185,7 +185,15 @@ public enum SaveImporter {
                                        sourcePrefix: prefix)
 
             guard let directory = resolve(draft) else {
-                missing.append(game?.title ?? game?.gameId ?? "these saves")
+                // A group we cannot NAME is not "missing" -- there is no absent game to
+                // report. Leaving it out of missingGames is what lets the app layer tell
+                // "named, but not installed" (say so) from "cannot name itself at all"
+                // (offer the chooser). Without the distinction, a save folder zipped by
+                // hand on a PC reports "These saves are for these saves, which isn't
+                // installed" and the reader has no way in.
+                if let name = game?.title ?? game?.gameId {
+                    missing.append(name)
+                }
                 continue
             }
 

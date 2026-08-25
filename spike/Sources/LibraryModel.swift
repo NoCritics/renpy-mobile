@@ -825,7 +825,6 @@ extension LibraryModel {
         // error. Refusing loudly is the only acceptable way to be wrong here.
         guard confirmation.destinations.count == confirmation.set.plans.count else {
             errorMessage = "Something went wrong preparing that import. Nothing was changed."
-            pendingSaveImport = nil
             return
         }
 

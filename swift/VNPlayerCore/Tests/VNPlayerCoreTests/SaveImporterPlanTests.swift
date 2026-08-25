@@ -168,6 +168,28 @@ final class SaveImporterPlanTests: XCTestCase {
         XCTAssertEqual(set.missingGames, ["Big Bad Dogs"])
     }
 
+    func testAnUnnameableGroupIsNotReportedAsAMissingGame() throws {
+        // A hand-zipped save folder carries no manifest, so nothing in it can say which
+        // game it belongs to. That is the chooser's case, not the "not installed" case.
+        // Reporting it as missing produced "These saves are for these saves, which isn't
+        // installed" -- a dead end for the exact input spec §5 names.
+        let zip = root.appendingPathComponent("hand-made.zip")
+        let archive = try XCTUnwrap(try? Archive(url: zip, accessMode: .create))
+        let payload = Data("from a pc".utf8)
+        try archive.addEntry(with: "some/folder/1-1-LT1.save", type: .file,
+                             uncompressedSize: Int64(payload.count),
+                             compressionMethod: .none) { position, size in
+            payload.subdata(in: Int(position)..<(Int(position) + size))
+        }
+
+        let set = try SaveImporter.plan(source: zip, resolve: { _ in nil },
+                                        caps: .default)
+
+        XCTAssertEqual(set.plans, [])
+        XCTAssertEqual(set.missingGames, [],
+                       "an unnameable group must not be reported as a missing game")
+    }
+
     func testEntryPolicyStillGuardsThisPath() throws {
         // Save transfer adds no new policy and gets no exemption from the old one.
         let zip = root.appendingPathComponent("evil.zip")
