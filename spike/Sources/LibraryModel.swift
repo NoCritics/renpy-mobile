@@ -37,6 +37,45 @@ final class LibraryModel: ObservableObject {
     @Published var magnification: CGFloat = 1
     @Published var magnifyOffset: CGSize = .zero
 
+    struct ExportConfirmation: Identifiable {
+        let id = UUID()
+        let title: String
+        let message: String
+        let items: [SaveExportItem]
+        let kind: SaveManifest.Kind
+    }
+
+    @Published var pendingExport: ExportConfirmation?
+    @Published var shareURL: URL?
+
+    struct ImportConfirmation: Identifiable {
+        let id = UUID()
+        let message: String
+        let warning: String?
+        let source: URL
+        let set: SaveImportPlanSet
+        let destinations: [URL]
+    }
+
+    @Published var pendingSaveImport: ImportConfirmation?
+    @Published var showSaveImporter = false
+
+    struct GameChoice: Identifiable {
+        let id = UUID()
+        /// Held so the import can be re-planned once she picks.
+        let source: URL
+        let candidates: [LibraryEntry]
+    }
+
+    @Published var pendingGameChoice: GameChoice?
+
+    /// Set by a row-scoped "Import saves", so a foreign file (which cannot name its own
+    /// game) is imported into the row the reader tapped rather than guessed at or handed
+    /// to the chooser. Read once, synchronously, inside the `resolve` closure that
+    /// `SaveImporter.plan` calls from `handlePickedSave` -- see that method's `defer` for
+    /// why this is always nil again by the time anything else could read it.
+    private var importHint: LibraryEntry?
+
     var lastControlCommandId: String?
     var memoryWarningShown = false
     var commands: Spool? { commandSpool }
@@ -85,6 +124,7 @@ final class LibraryModel: ObservableObject {
 
             checkCrashSentinel()
             store?.emptyTrash()
+            cleanStaleExports()
             reload()
         } catch {
             errorMessage = "Could not set up storage: \(error.localizedDescription)"
@@ -122,6 +162,37 @@ final class LibraryModel: ObservableObject {
 
     func reload() {
         entries = store?.load() ?? []
+    }
+
+    /// Removes any export `.zip` left behind in `paths.imports` from a previous run.
+    ///
+    /// `paths.imports` is also where game-import staging lives, but staging always uses
+    /// a UUID-named subdirectory and cleans up after itself on both success and failure
+    /// (see `importArchive`). An export, by contrast, writes a plain file directly into
+    /// `paths.imports` and hands its URL to the share sheet -- and nothing else ever
+    /// deletes that file afterwards. `performExport`/`dismissShare` remove it as soon as
+    /// the share sheet closes in the common case, but a force-quit or crash while the
+    /// sheet is open would leave it behind forever, in a directory the Files app cannot
+    /// even see (Application Support is hidden). This sweep is the backstop: anything
+    /// that is a plain file (not a staging directory) sitting directly in `paths.imports`
+    /// at startup can only be a stray export, so it is safe to remove.
+    private func cleanStaleExports() {
+        guard let paths else { return }
+        guard let contents = try? FileManager.default.contentsOfDirectory(
+            at: paths.imports, includingPropertiesForKeys: [.isDirectoryKey]) else { return }
+
+        for url in contents {
+            // Fail CLOSED. If the file system will not tell us what this is, leave it
+            // alone: `removeItem` deletes a directory recursively, and the directory next
+            // to these exports is game-import staging, which can hold a multi-gigabyte
+            // extraction. An unknown entry is worth leaking; it is not worth deleting.
+            guard let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?
+                    .isDirectory else { continue }
+
+            if !isDirectory {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
     }
 
     // MARK: - Import
@@ -299,6 +370,23 @@ final class LibraryModel: ObservableObject {
                 guard commandId == pendingCommandId else { continue }
                 if case .launching(let gameId, _) = phase {
                     try? paths.map { try? FileManager.default.removeItem(at: $0.launchSentinel) }
+
+                    // Spec §3.1: the engine is the only source for config.save_directory,
+                    // and it only ever says so at gameReady. Joined onto the library entry
+                    // here so the export manifest (and WHERE-TO-PUT-THESE.txt) can name the
+                    // reader's real desktop folder instead of falling back to the null
+                    // branch for every game, forever.
+                    if let directory = ProtocolMessages.gameReadySaveDirectory(message.payload),
+                       let store,
+                       let index = entries.firstIndex(where: { $0.id == gameId }),
+                       entries[index].saveDirectory != directory {
+                        var updated = entries[index]
+                        updated.saveDirectory = directory
+                        if let saved = try? store.upsert(updated) {
+                            entries = saved
+                        }
+                    }
+
                     phase = .playing(gameId: gameId)
                     applyWindowState()
                     gameStarts += 1
@@ -477,6 +565,364 @@ extension LibraryModel {
         return false
     }
 
+    // MARK: Save export
+
+    /// Build the confirmation for an export. `entry` nil means every game.
+    ///
+    /// The numbers come from `summarise`, which writes nothing -- a confirmation that
+    /// had to produce the file first would not be a confirmation.
+    func confirmExport(_ entry: LibraryEntry?) {
+        guard let paths else { return }
+
+        let chosen = entry.map { [$0] } ?? entries
+        let items = chosen.map {
+            SaveExportItem(gameId: $0.id, title: $0.title,
+                           saveDirectory: $0.saveDirectory,
+                           directory: paths.saveDirectory($0.id))
+        }
+
+        let summary = SaveExporter.summarise(items)
+
+        guard summary.fileCount > 0 else {
+            errorMessage = entry == nil
+                ? "There are no saves to back up yet."
+                : "\(entry!.title) has no saves yet."
+            return
+        }
+
+        let size = ByteCountFormatter.string(fromByteCount: summary.totalBytes,
+                                             countStyle: .file)
+        let saves = summary.fileCount == 1 ? "1 save" : "\(summary.fileCount) saves"
+
+        pendingExport = ExportConfirmation(
+            title: entry == nil ? "Back up all saves" : "Export saves",
+            message: entry == nil
+                ? "Back up saves for all \(chosen.count) games? \(saves), \(size)."
+                : "Export saves for \(entry!.title)? \(saves), \(size). "
+                  + "You'll choose where to put the file next.",
+            items: items,
+            kind: entry == nil ? .backup : .game)
+    }
+
+    func performExport() {
+        guard let confirmation = pendingExport, let paths else { return }
+        pendingExport = nil
+
+        // This used to also delete a previous, not-yet-picked-up `shareURL` here, on the
+        // same reasoning I7 already reversed for `dismissShare()`: a share sheet the
+        // reader has not dismissed yet (or handed to AirDrop/Save-to-Files, which can
+        // keep reading asynchronously after it visibly closes) may still be consuming
+        // that file. Exporting game B while game A's share sheet for a previous export is
+        // still up -- or still being read by an activity -- must not delete A's file out
+        // from under it. `cleanStaleExports()` already sweeps `paths.imports` at every
+        // launch, so it owns this file's lifetime too; the cost is that a session which
+        // exports several times in a row can leave more than one file sitting there until
+        // the next launch, which is the safe direction to be wrong in.
+
+        let stamp = ISO8601DateFormatter()
+        stamp.formatOptions = [.withYear, .withMonth, .withDay, .withDashSeparatorInDate]
+        let dated = stamp.string(from: Date())
+
+        let name = confirmation.kind == .backup
+            ? "VNPlayer saves \(dated).zip"
+            : "\(confirmation.items[0].title) saves \(dated).zip"
+
+        let out = paths.imports.appendingPathComponent(name)
+
+        do {
+            _ = try SaveExporter.export(confirmation.items, kind: confirmation.kind,
+                                        appVersion: Self.appVersion, to: out,
+                                        now: Date())
+            shareURL = out
+        } catch let error as SaveTransferError {
+            errorMessage = error.userMessage
+        } catch {
+            errorMessage = "That export did not work."
+        }
+    }
+
+    /// Called when the share sheet closes, whichever way: the reader picked a
+    /// destination, or cancelled.
+    ///
+    /// I7: this used to also delete `shareURL` here, on the assumption that
+    /// `UIActivityViewController` only dismisses once the chosen activity has finished
+    /// consuming the file. That assumption does not reliably hold for AirDrop or
+    /// Save-to-Files, which can keep reading the URL asynchronously after the sheet
+    /// visibly closes -- deleting here could truncate the very backup this feature
+    /// exists to produce. `cleanStaleExports()` already sweeps `paths.imports` at every
+    /// launch and is safe to rely on for this instead: it costs one extra file sitting
+    /// in a hidden directory between now and the next launch, which is the safe
+    /// direction to be wrong in, versus a truncated backup. So `paths.imports` -- and
+    /// therefore the file's lifetime -- is owned by that sweep, not by this dismissal.
+    func dismissShare() {
+        shareURL = nil
+    }
+
+    static var appVersion: String {
+        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0"
+    }
+
+    /// Export the game that is running now.
+    ///
+    /// `LibraryPhase.playing` already carries the id (`LibraryModel.swift:12`), so there
+    /// is no second source of truth to keep in step with it.
+    func confirmExportCurrentGame() {
+        guard case .playing(let id) = phase,
+              let entry = entries.first(where: { $0.id == id })
+        else { return }
+        confirmExport(entry)
+    }
+
+    // MARK: Save import
+
+    func beginSaveImport(into hint: LibraryEntry? = nil) {
+        guard !showSaveImporter else { return }
+        importHint = hint
+        print("[vnspike] save import: opening")
+        showSaveImporter = true
+    }
+
+    func handlePickedSave(_ result: Result<[URL], Error>) {
+        // This attempt's hint is spent the moment `resolve` below reads it, on every
+        // branch this function can take -- matched, unmatched (chooser/error), or a
+        // thrown error. Clearing it unconditionally on exit is what keeps a cancelled or
+        // failed import from leaving a stale hint for the next, unrelated import.
+        defer { importHint = nil }
+
+        // I4: the game-import equivalent (`handlePicked`, above) sets `errorMessage` on
+        // a picker failure; this one silently returned, so a picker error here was a
+        // button that did nothing, forever.
+        switch result {
+        case .failure(let error):
+            errorMessage = error.localizedDescription
+            return
+        case .success(let urls):
+            guard let first = urls.first else { return }
+            handlePickedSave(url: first)
+        }
+    }
+
+    private func handlePickedSave(url: URL) {
+        guard let paths else { return }
+
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+
+        var destinations: [URL] = []
+
+        do {
+            let set = try SaveImporter.plan(source: url, resolve: { plan in
+                // A row-scoped import means "into this game", and a foreign file cannot
+                // name its own game, so the row IS the answer. Consulted before the
+                // id/title matches because those are structurally nil for a foreign plan
+                // and would fall through to a chooser the reader already answered by
+                // tapping a specific row.
+                let match = (plan.gameId == nil ? self.importHint : nil)
+                    ?? self.entries.first { $0.id == plan.gameId }
+                    ?? self.entries.first { $0.title == plan.title }
+                    ?? (plan.gameId == nil && self.entries.count == 1
+                        ? self.entries[0] : nil)
+                guard let match else { return nil }
+                let directory = paths.saveDirectory(match.id)
+                destinations.append(directory)
+                return directory
+            }, caps: .default)
+
+            guard !set.plans.isEmpty else {
+                // §4.2 case 3. A bare .save carries no id and no title, and a manifest
+                // can name a game installed here under a different id -- ids come from
+                // the archive's distribution root, so the same game from a differently
+                // named .zip legitimately differs. Refusing outright would strand the
+                // case this feature exists for.
+                if entries.isEmpty {
+                    errorMessage = "Add a game first, then import its saves."
+                } else if set.missingGames.isEmpty {
+                    pendingGameChoice = GameChoice(source: url, candidates: entries)
+                } else {
+                    errorMessage = "These saves are for "
+                        + "\(set.missingGames.joined(separator: ", ")), "
+                        + "which isn't installed."
+                }
+                return
+            }
+
+            pendingSaveImport = ImportConfirmation(
+                message: Self.describe(set),
+                // Spec §6: one warning, inside this sheet, never a checkmark.
+                warning: set.isForeign
+                    ? "This file didn't come from VNPlayer. Ren'Py saves can contain "
+                      + "code, so only open it if you trust where it came from."
+                    : nil,
+                source: url,
+                set: set,
+                destinations: destinations)
+        } catch let error as SaveTransferError {
+            errorMessage = error.userMessage
+        } catch let error as ImportError {
+            errorMessage = error.userMessage
+        } catch {
+            errorMessage = "That file could not be read."
+        }
+    }
+
+    /// Render the plan. This IS the confirmation -- see spec §4.5.
+    static func describe(_ set: SaveImportPlanSet) -> String {
+        var lines: [String] = []
+
+        for plan in set.plans {
+            let into = plan.title.map { " into \($0)" } ?? ""
+            let fresh = plan.addedCount - plan.newSlotCount
+            // I10: "Import 1 saves" -- every count in this sentence needs its own
+            // singular, not just the leading one.
+            let saves = plan.addedCount == 1 ? "1 save" : "\(plan.addedCount) saves"
+            var line = "Import \(saves)\(into)?"
+            if fresh > 0 {
+                line += fresh == 1
+                    ? " 1 goes into an empty slot."
+                    : " \(fresh) go into empty slots."
+            }
+            if plan.newSlotCount > 0 {
+                line += plan.newSlotCount == 1
+                    ? " 1 into a new slot."
+                    : " \(plan.newSlotCount) into new slots."
+            }
+            if !plan.alreadyPresent.isEmpty {
+                line += plan.alreadyPresent.count == 1
+                    ? " 1 already here and will be skipped."
+                    : " \(plan.alreadyPresent.count) already here and will be skipped."
+            }
+            lines.append(line)
+        }
+
+        if !set.missingGames.isEmpty {
+            lines.append("Not installed, so skipped: "
+                         + set.missingGames.joined(separator: ", ") + ".")
+        }
+
+        lines.append("Nothing will be replaced.")
+        return lines.joined(separator: " ")
+    }
+
+    /// She picked a game for a save file that could not name one. Plan again, forcing
+    /// every save into that game's directory, then show the ordinary §4.5 sheet -- the
+    /// confirmation is not skipped just because a question preceded it.
+    func chooseGame(_ entry: LibraryEntry) {
+        guard let choice = pendingGameChoice, let paths else { return }
+        pendingGameChoice = nil
+        // Defensive, not load-bearing: this path never reads importHint (it answers
+        // §4.2 case 3 directly, from the chooser, not from a row), but nothing should
+        // carry a stale hint forward into whatever import happens next.
+        importHint = nil
+
+        let url = choice.source
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+
+        let directory = paths.saveDirectory(entry.id)
+
+        do {
+            let set = try SaveImporter.plan(source: url, resolve: { _ in directory },
+                                            caps: .default)
+            guard !set.plans.isEmpty else {
+                errorMessage = "There was nothing to import."
+                return
+            }
+
+            // I3: this used to hand-build its own sentence, which drifted from
+            // `describe(_:)` and silently dropped two of its clauses (the empty-slot
+            // count, the already-present count) -- importing a bare .save already on the
+            // phone read "Import 0 saves into Big Bad Dogs? Nothing will be replaced."
+            // A save that reached the chooser could not name its own game (§4.2 case 3),
+            // so `describe` has no title to put in its "into <title>" clause; prepend
+            // the game she just picked instead of leaving the sheet silent about it.
+            let described = Self.describe(set)
+            let message = set.plans.contains(where: { $0.title != nil })
+                ? described
+                : "Into \(entry.title). " + described
+
+            // I3, minor: `set.plans` can be more than one entry even for a save file she
+            // picked a single game for -- a hand-made zip with two `games/<x>/` folders
+            // and no manifest plans two groups, both forced into the same directory here.
+            // A one-element array tripped `performSaveImport`'s lockstep guard.
+            let confirmation = ImportConfirmation(
+                message: message,
+                warning: set.isForeign
+                    ? "This file didn't come from VNPlayer. Ren'Py saves can contain "
+                      + "code, so only open it if you trust where it came from."
+                    : nil,
+                source: url,
+                set: set,
+                destinations: Array(repeating: directory, count: set.plans.count))
+
+            // Same lockstep invariant as performSaveImport's guard below -- checked here
+            // too because this is the other place an ImportConfirmation gets built by
+            // hand, from a freshly-made plan rather than the one handlePickedSave built.
+            guard confirmation.destinations.count == confirmation.set.plans.count else {
+                errorMessage = "Something went wrong preparing that import. Nothing was changed."
+                return
+            }
+
+            pendingSaveImport = confirmation
+        } catch let error as SaveTransferError {
+            errorMessage = error.userMessage
+        } catch let error as ImportError {
+            errorMessage = error.userMessage
+        } catch {
+            errorMessage = "That file could not be read."
+        }
+    }
+
+    func performSaveImport() {
+        guard let confirmation = pendingSaveImport else { return }
+        pendingSaveImport = nil
+        // Defensive, not load-bearing: importHint is already nil by now on every path
+        // that reaches here (handlePickedSave clears it via `defer` before this
+        // confirmation ever exists; chooseGame clears it before building its own). A
+        // completed import must not leave it stale regardless, so this holds even if
+        // one of those clears is ever removed by a future edit.
+        importHint = nil
+
+        // These two arrays are paired by index, and the pairing is maintained by
+        // SaveImporter.plan calling `resolve` exactly once per appended plan. Nothing the
+        // compiler checks enforces that. If it ever stops holding, the failure is one
+        // game's saves written into another game's directory -- both paths valid, no
+        // error. Refusing loudly is the only acceptable way to be wrong here.
+        guard confirmation.destinations.count == confirmation.set.plans.count else {
+            errorMessage = "Something went wrong preparing that import. Nothing was changed."
+            return
+        }
+
+        let scoped = confirmation.source.startAccessingSecurityScopedResource()
+        defer { if scoped { confirmation.source.stopAccessingSecurityScopedResource() } }
+
+        var sentences: [String] = []
+
+        do {
+            for (index, plan) in confirmation.set.plans.enumerated() {
+                let result = try SaveImporter.apply(
+                    plan, source: confirmation.source,
+                    into: confirmation.destinations[index])
+                sentences.append(result.sentence)
+            }
+            noticeMessage = sentences.joined(separator: " ")
+        } catch let error as SaveTransferError {
+            errorMessage = error.userMessage
+        } catch {
+            errorMessage = "That import did not finish."
+        }
+    }
+
+    /// Import from the strip. Returns to the library first, then picks.
+    ///
+    /// Not caution: Ren'Py caches the slot list and holds the save directory open, so
+    /// writing files underneath a live engine leaves the game looking at saves that are
+    /// not there.
+    func importSavesFromStrip() {
+        coordinatorRef?.showControlMessage("Returning to the library to import saves.")
+        returnToLibrary()
+        beginSaveImport()
+    }
+
     // MARK: Opening and closing
 
     func enterMagnifier() {
@@ -516,7 +962,6 @@ extension LibraryModel {
         if isPlaying {
             coordinatorRef?.updateControls(
                 canRollback: engine.canRollback,
-                canSave: engine.canSave,
                 isSkipping: engine.isSkipping,
                 inMenu: engine.inMenu)
         }
@@ -563,7 +1008,6 @@ extension LibraryModel {
                 engine = state
                 coordinatorRef?.updateControls(
                     canRollback: state.canRollback,
-                    canSave: state.canSave,
                     isSkipping: state.isSkipping,
                     inMenu: state.inMenu)
             }

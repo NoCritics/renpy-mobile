@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shell"))
 from vnshell import lifecycle  # noqa: E402
 from vnshell import mailbox as mailbox_module  # noqa: E402
 from vnshell.mailbox import Command, Mailbox  # noqa: E402
+from vnshell.state import STATE  # noqa: E402
 
 
 class ScriptedTransport:
@@ -370,6 +371,72 @@ class EngineStateTests(unittest.TestCase):
         lifecycle._publish_engine_state()
 
         self.assertEqual(len(self.events.events), 1)
+
+
+class GameReadySaveDirectoryTests(unittest.TestCase):
+    """config.save_directory is the one thing only the running engine knows.
+
+    It cannot be read from the archive at import time -- the game sets it in Python --
+    so it rides out on the event that already announces the game is up.
+    """
+
+    def setUp(self):
+        self._real_renpy = sys.modules.get("renpy")
+        self._real_events = lifecycle._EVENTS
+        self.events = RecordingEmitter()
+        lifecycle._EVENTS = self.events
+        lifecycle._announced = False
+        self._real_game_id = STATE.current_game_id
+
+    def tearDown(self):
+        lifecycle._EVENTS = self._real_events
+        lifecycle._announced = True
+        STATE.current_game_id = self._real_game_id
+        if self._real_renpy is None:
+            sys.modules.pop("renpy", None)
+        else:
+            sys.modules["renpy"] = self._real_renpy
+
+    def test_game_ready_carries_the_save_directory(self):
+        module = fake_renpy()
+        module.config.save_directory = "BigBadDogs-1489443940"
+        sys.modules["renpy"] = module
+        STATE.current_game_id = "bigbaddogs"
+
+        lifecycle.announce_game_ready()
+
+        event = self.events.events[0]
+        self.assertEqual(event["event"], "gameReady")
+        self.assertEqual(event["saveDirectory"], "BigBadDogs-1489443940")
+
+    def test_a_game_with_no_save_directory_reports_none_not_a_string(self):
+        # renpy/config.py:369 -- save_directory may be None, and "None" as a string
+        # would send WHERE-TO-PUT-THESE.txt to a folder that does not exist.
+        module = fake_renpy()
+        module.config.save_directory = None
+        sys.modules["renpy"] = module
+        STATE.current_game_id = "bigbaddogs"
+
+        lifecycle.announce_game_ready()
+
+        self.assertIsNone(self.events.events[0]["saveDirectory"])
+
+    def test_shell_ready_has_no_save_directory_to_report(self):
+        # The sentinel is the whole test. Without it, config has no save_directory at all,
+        # so removing the current_game_id guard raises AttributeError, the catch-all
+        # swallows it, and the result is None either way -- the test passes against the
+        # broken version. With a value present, an unguarded read reports the previous
+        # game's directory, which is exactly the leak the guard prevents.
+        module = fake_renpy()
+        module.config.save_directory = "leftover-from-the-previous-game"
+        sys.modules["renpy"] = module
+        STATE.current_game_id = None
+
+        lifecycle.announce_game_ready()
+
+        event = self.events.events[0]
+        self.assertEqual(event["event"], "shellReady")
+        self.assertIsNone(event["saveDirectory"])
 
 
 if __name__ == "__main__":

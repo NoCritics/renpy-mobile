@@ -22,10 +22,51 @@ struct LibraryView: View {
         ) { result in
             model.handlePicked(result)
         }
-        .alert("Import failed", isPresented: errorBinding) {
+        // I5: one alert now serves import, export, backup and the game chooser, so a
+        // title naming only one of them was actively wrong for the other three -- she
+        // taps "Back up saves", something goes wrong, and the box reads "Import failed".
+        .alert("That didn't work", isPresented: errorBinding) {
             Button("OK", role: .cancel) { model.errorMessage = nil }
         } message: {
             Text(model.errorMessage ?? "")
+        }
+        .alert(item: $model.pendingExport) { confirmation in
+            Alert(title: Text(confirmation.title),
+                  message: Text(confirmation.message),
+                  primaryButton: .default(Text("Export")) { model.performExport() },
+                  secondaryButton: .cancel())
+        }
+        .sheet(isPresented: Binding(
+            get: { model.shareURL != nil },
+            set: { if !$0 { model.dismissShare() } })
+        ) {
+            if let url = model.shareURL { ShareSheet(url: url) }
+        }
+        .fileImporter(
+            isPresented: $model.showSaveImporter,
+            allowedContentTypes: Self.importableTypes,
+            allowsMultipleSelection: false
+        ) { result in
+            model.handlePickedSave(result)
+        }
+        .alert(item: $model.pendingSaveImport) { confirmation in
+            Alert(title: Text("Import saves"),
+                  message: Text([confirmation.message, confirmation.warning]
+                                    .compactMap { $0 }.joined(separator: "\n\n")),
+                  primaryButton: .default(Text("Import")) { model.performSaveImport() },
+                  secondaryButton: .cancel())
+        }
+        .confirmationDialog(
+            "Which game are these saves for?",
+            isPresented: Binding(
+                get: { model.pendingGameChoice != nil },
+                set: { if !$0 { model.pendingGameChoice = nil } }),
+            titleVisibility: .visible
+        ) {
+            ForEach(model.pendingGameChoice?.candidates ?? []) { entry in
+                Button(entry.title) { model.chooseGame(entry) }
+            }
+            Button("Cancel", role: .cancel) { model.pendingGameChoice = nil }
         }
     }
 
@@ -61,6 +102,18 @@ struct LibraryView: View {
         if let pkware = UTType("com.pkware.zip-archive") {
             types.append(pkware)
         }
+        if let save = UTType(filenameExtension: "save") {
+            types.append(save)
+        }
+        // I8: `.save` is not a UTI any app declares, so `UTType(filenameExtension:)`
+        // above yields a dynamic, provider-dependent type -- whether a bare `.save` is
+        // selectable then depends on what the document provider decided to advertise it
+        // as. `.data` is the broad catch-all every provider conforms to, so it is the
+        // difference between the file being greyed out (spec §5's bare-.save import does
+        // not exist) and being pickable and reported on: SaveImporter already rejects
+        // anything that isn't a save with a named sentence, so letting her choose it and
+        // get an honest message beats a file she cannot select at all.
+        types.append(.data)
         // Distinct identifiers only; the picker treats a repeated type as a conflict.
         var seen = Set<String>()
         return types.filter { seen.insert($0.identifier).inserted }
@@ -109,6 +162,14 @@ struct LibraryView: View {
             Spacer()
 
             if case .idle = model.phase {
+                Button {
+                    model.confirmExport(nil)          // nil means every game
+                } label: {
+                    Label("Back up saves", systemImage: "arrow.up.doc.on.clipboard")
+                        .font(.system(size: 17, weight: .semibold))
+                }
+                .buttonStyle(.bordered)
+
                 Button {
                     model.beginImport()
                 } label: {
@@ -230,6 +291,16 @@ struct LibraryView: View {
                 ForEach(model.entries) { entry in
                     GameTile(entry: entry) { model.launch(entry) }
                         .contextMenu {
+                            Button {
+                                model.confirmExport(entry)
+                            } label: {
+                                Label("Export saves", systemImage: "square.and.arrow.up")
+                            }
+                            Button {
+                                model.beginSaveImport(into: entry)
+                            } label: {
+                                Label("Import saves", systemImage: "square.and.arrow.down")
+                            }
                             Button(role: .destructive) {
                                 model.delete(entry, includingSaves: false)
                             } label: {

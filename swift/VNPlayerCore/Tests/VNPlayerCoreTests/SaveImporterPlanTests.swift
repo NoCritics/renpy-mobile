@@ -1,0 +1,554 @@
+import XCTest
+import ZIPFoundation
+@testable import VNPlayerCore
+
+final class SaveImporterPlanTests: XCTestCase {
+
+    private var root: URL!
+    private var destination: URL!
+
+    override func setUpWithError() throws {
+        root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        destination = root.appendingPathComponent("Saves", isDirectory: true)
+        try FileManager.default.createDirectory(at: destination,
+                                                withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    private func alwaysResolve(_ plan: SaveImportPlan) -> URL? { destination }
+
+    /// Build an export to import back, which is also the round-trip test.
+    private func makeExport(names: [String], kind: SaveManifest.Kind = .game) throws -> URL {
+        let saves = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: saves, withIntermediateDirectories: true)
+        for name in names {
+            try Data("contents of \(name)".utf8)
+                .write(to: saves.appendingPathComponent(name))
+        }
+        let out = root.appendingPathComponent("\(UUID().uuidString).zip")
+        _ = try SaveExporter.export(
+            [SaveExportItem(gameId: "bigbaddogs", title: "Big Bad Dogs",
+                            saveDirectory: "BBD-1", directory: saves)],
+            kind: kind, appVersion: "0.2.0", to: out, now: Date())
+        return out
+    }
+
+    func testOurOwnExportPlansCleanlyAndIsNotForeign() throws {
+        let source = try makeExport(names: ["1-1-LT1.save", "1-2-LT1.save"])
+        let set = try SaveImporter.plan(source: source, resolve: alwaysResolve,
+                                        caps: .default)
+
+        XCTAssertFalse(set.isForeign)
+        XCTAssertEqual(set.plans.count, 1)
+        XCTAssertEqual(set.plans[0].gameId, "bigbaddogs")
+        XCTAssertEqual(set.plans[0].title, "Big Bad Dogs")
+        XCTAssertEqual(set.plans[0].addedCount, 2)
+        XCTAssertEqual(set.plans[0].newSlotCount, 0)
+        XCTAssertEqual(set.plans[0].sourcePrefix, "saves")
+    }
+
+    func testPlanningWritesNothing() throws {
+        let source = try makeExport(names: ["1-1-LT1.save"])
+        _ = try SaveImporter.plan(source: source, resolve: alwaysResolve, caps: .default)
+
+        let after = try FileManager.default
+            .contentsOfDirectory(atPath: destination.path)
+        XCTAssertEqual(after, [], "plan() must not touch the destination")
+    }
+
+    func testATakenSlotIsPlannedIntoANewOneAndCounted() throws {
+        try Data("existing".utf8)
+            .write(to: destination.appendingPathComponent("1-1-LT1.save"))
+
+        let source = try makeExport(names: ["1-1-LT1.save"])
+        let set = try SaveImporter.plan(source: source, resolve: alwaysResolve,
+                                        caps: .default)
+
+        XCTAssertEqual(set.plans[0].newSlotCount, 1)
+        XCTAssertEqual(set.plans[0].placements[0].destination.fileName, "1-2-LT1.save")
+    }
+
+    func testIdenticalContentIsListedAsAlreadyPresentNotPlanned() throws {
+        // A restore run twice must not double every slot.
+        try Data("contents of 1-1-LT1.save".utf8)
+            .write(to: destination.appendingPathComponent("1-1-LT1.save"))
+
+        let source = try makeExport(names: ["1-1-LT1.save"])
+        let set = try SaveImporter.plan(source: source, resolve: alwaysResolve,
+                                        caps: .default)
+
+        XCTAssertEqual(set.plans[0].alreadyPresent, ["1-1-LT1.save"])
+        XCTAssertEqual(set.plans[0].addedCount, 0)
+    }
+
+    func testADamagedFileIsReportedByName() throws {
+        // sha256 in the manifest proves the file is undamaged. That is a different claim
+        // from "safe", and only this one is checkable.
+        let source = try makeExport(names: ["1-1-LT1.save"])
+        try corrupt(entry: "saves/1-1-LT1.save", in: source)
+
+        XCTAssertThrowsError(
+            try SaveImporter.plan(source: source, resolve: alwaysResolve, caps: .default)
+        ) { error in
+            XCTAssertEqual(error as? SaveTransferError,
+                           .damagedFile(name: "1-1-LT1.save"))
+        }
+    }
+
+    func testABareSaveFileIsAcceptedAndIsForeign() throws {
+        let bare = root.appendingPathComponent("3-2-LT1.save")
+        try Data("from a pc".utf8).write(to: bare)
+
+        let set = try SaveImporter.plan(source: bare, resolve: alwaysResolve,
+                                        caps: .default)
+
+        XCTAssertTrue(set.isForeign)
+        XCTAssertNil(set.plans[0].gameId)
+        XCTAssertEqual(set.plans[0].placements[0].destination.fileName, "3-2-LT1.save")
+        XCTAssertEqual(set.plans[0].sourcePrefix, "")
+    }
+
+    func testAManifestFreeZipIsAcceptedAndIsForeign() throws {
+        let zip = root.appendingPathComponent("hand-made.zip")
+        let archive = try XCTUnwrap(try? Archive(url: zip, accessMode: .create))
+        let payload = Data("from a pc".utf8)
+        try archive.addEntry(with: "some/folder/1-1-LT1.save", type: .file,
+                             uncompressedSize: Int64(payload.count),
+                             compressionMethod: .none) { position, size in
+            payload.subdata(in: Int(position)..<(Int(position) + size))
+        }
+
+        let set = try SaveImporter.plan(source: zip, resolve: alwaysResolve,
+                                        caps: .default)
+
+        XCTAssertTrue(set.isForeign)
+        XCTAssertEqual(set.plans[0].addedCount, 1,
+                       "save files must be found at any depth")
+        XCTAssertEqual(set.plans[0].sourcePrefix, "some/folder")
+    }
+
+    func testAGameArchiveIsRejectedByNameNotGenerically() throws {
+        let zip = root.appendingPathComponent("game.zip")
+        let archive = try XCTUnwrap(try? Archive(url: zip, accessMode: .create))
+        let payload = Data("script".utf8)
+        try archive.addEntry(with: "MyGame-1.0/game/script.rpy", type: .file,
+                             uncompressedSize: Int64(payload.count),
+                             compressionMethod: .none) { position, size in
+            payload.subdata(in: Int(position)..<(Int(position) + size))
+        }
+
+        XCTAssertThrowsError(
+            try SaveImporter.plan(source: zip, resolve: alwaysResolve, caps: .default)
+        ) { error in
+            XCTAssertEqual(error as? SaveTransferError, .looksLikeAGameArchive)
+        }
+    }
+
+    func testAZipWithNothingUsefulIsRefused() throws {
+        let zip = root.appendingPathComponent("empty.zip")
+        _ = try XCTUnwrap(try? Archive(url: zip, accessMode: .create))
+
+        XCTAssertThrowsError(
+            try SaveImporter.plan(source: zip, resolve: alwaysResolve, caps: .default)
+        ) { error in
+            XCTAssertEqual(error as? SaveTransferError, .noSaveFilesFound)
+        }
+    }
+
+    func testAnUninstalledGameIsNamedRatherThanSilentlySkipped() throws {
+        let source = try makeExport(names: ["1-1-LT1.save"])
+        let set = try SaveImporter.plan(source: source, resolve: { _ in nil },
+                                        caps: .default)
+
+        XCTAssertEqual(set.plans, [])
+        XCTAssertEqual(set.missingGames, ["Big Bad Dogs"])
+    }
+
+    func testAnUnnameableGroupIsNotReportedAsAMissingGame() throws {
+        // A hand-zipped save folder carries no manifest, so nothing in it can say which
+        // game it belongs to. That is the chooser's case, not the "not installed" case.
+        // Reporting it as missing produced "These saves are for these saves, which isn't
+        // installed" -- a dead end for the exact input spec §5 names.
+        let zip = root.appendingPathComponent("hand-made.zip")
+        let archive = try XCTUnwrap(try? Archive(url: zip, accessMode: .create))
+        let payload = Data("from a pc".utf8)
+        try archive.addEntry(with: "some/folder/1-1-LT1.save", type: .file,
+                             uncompressedSize: Int64(payload.count),
+                             compressionMethod: .none) { position, size in
+            payload.subdata(in: Int(position)..<(Int(position) + size))
+        }
+
+        let set = try SaveImporter.plan(source: zip, resolve: { _ in nil },
+                                        caps: .default)
+
+        XCTAssertEqual(set.plans, [])
+        XCTAssertEqual(set.missingGames, [],
+                       "an unnameable group must not be reported as a missing game")
+    }
+
+    func testEntryPolicyStillGuardsThisPath() throws {
+        // Save transfer adds no new policy and gets no exemption from the old one.
+        let zip = root.appendingPathComponent("evil.zip")
+        let archive = try XCTUnwrap(try? Archive(url: zip, accessMode: .create))
+        let payload = Data("x".utf8)
+        try archive.addEntry(with: "../../1-1-LT1.save", type: .file,
+                             uncompressedSize: Int64(payload.count),
+                             compressionMethod: .none) { position, size in
+            payload.subdata(in: Int(position)..<(Int(position) + size))
+        }
+
+        XCTAssertThrowsError(
+            try SaveImporter.plan(source: zip, resolve: alwaysResolve, caps: .default))
+    }
+
+    // MARK: - I2: the four EntryPolicy rejections this path used to skip
+    //
+    // ArchiveImporterTests already covers these for the game-import path; these four
+    // exist because `SaveImporter.plan` had its own, separate loop over the archive that
+    // enforced only `maxEntries` and `maxEntryUncompressed` (ArchiveImporterTests does
+    // not exercise SaveImporter at all, so nothing here was implied by those tests
+    // passing). Spec §6/§8: "Save transfer adds no new policy and gets no exemption from
+    // the old one" -- these are the four ArchiveImporter enforces that SaveImporter did
+    // not, and the real harm is `plan()` extracting every save entry into memory to
+    // digest it before any of these caps stood in the way: a crafted zip was an
+    // out-of-memory kill with no message.
+
+    func testASymlinkEntryIsRejected() throws {
+        let zip = root.appendingPathComponent("symlink.zip")
+        let archive = try XCTUnwrap(try? Archive(url: zip, accessMode: .create))
+        let target = Data("/etc/passwd".utf8)
+        try archive.addEntry(with: "1-1-LT1.save", type: .symlink,
+                             uncompressedSize: Int64(target.count)) { position, size in
+            target.subdata(in: Int(position)..<(Int(position) + size))
+        }
+
+        XCTAssertThrowsError(
+            try SaveImporter.plan(source: zip, resolve: alwaysResolve, caps: .default)
+        ) { error in
+            guard let importError = error as? ImportError else {
+                return XCTFail("expected an ImportError, got \(error)")
+            }
+            guard case .symlinkNotAllowed = importError else {
+                return XCTFail("expected symlinkNotAllowed, got \(importError)")
+            }
+        }
+    }
+
+    func testACaseInsensitiveDuplicateEntryIsRejected() throws {
+        // iOS folds case, so these two entries are one destination -- the same hazard
+        // ArchiveImporter's `testCaseInsensitiveDuplicateIsRejected` guards on the
+        // game-import path.
+        let zip = root.appendingPathComponent("duplicate.zip")
+        let archive = try XCTUnwrap(try? Archive(url: zip, accessMode: .create))
+        for name in ["saves/1-1-LT1.save", "SAVES/1-1-LT1.SAVE"] {
+            let payload = Data("x".utf8)
+            try archive.addEntry(with: name, type: .file,
+                                 uncompressedSize: Int64(payload.count),
+                                 compressionMethod: .none) { position, size in
+                payload.subdata(in: Int(position)..<(Int(position) + size))
+            }
+        }
+
+        XCTAssertThrowsError(
+            try SaveImporter.plan(source: zip, resolve: alwaysResolve, caps: .default)
+        ) { error in
+            guard let importError = error as? ImportError else {
+                return XCTFail("expected an ImportError, got \(error)")
+            }
+            guard case .duplicateEntry = importError else {
+                return XCTFail("expected duplicateEntry, got \(importError)")
+            }
+        }
+    }
+
+    func testExcessiveCompressionRatioIsRejected() throws {
+        // Real assets (png, ogg, webp, an already-zipped .save) barely shrink. A ratio
+        // this high on a save-named entry is a zip bomb, not a save file.
+        let zip = root.appendingPathComponent("bomb.zip")
+        let archive = try XCTUnwrap(try? Archive(url: zip, accessMode: .create))
+        let payload = Data(repeating: 0, count: 200_000)
+        try archive.addEntry(with: "1-1-LT1.save", type: .file,
+                             uncompressedSize: Int64(payload.count),
+                             compressionMethod: .deflate) { position, size in
+            payload.subdata(in: Int(position)..<(Int(position) + size))
+        }
+
+        let caps = ImportCaps(maxEntries: .max, maxTotalUncompressed: .max,
+                              maxEntryUncompressed: .max, maxCompressionRatio: 2)
+
+        XCTAssertThrowsError(
+            try SaveImporter.plan(source: zip, resolve: alwaysResolve, caps: caps)
+        ) { error in
+            guard let importError = error as? ImportError else {
+                return XCTFail("expected an ImportError, got \(error)")
+            }
+            guard case .suspiciousCompressionRatio = importError else {
+                return XCTFail("expected suspiciousCompressionRatio, got \(importError)")
+            }
+        }
+    }
+
+    func testTotalUncompressedCapIsEnforced() throws {
+        let source = try makeExport(names: ["1-1-LT1.save", "1-2-LT1.save"])
+        let caps = ImportCaps(maxEntries: .max, maxTotalUncompressed: 10,
+                              maxEntryUncompressed: .max, maxCompressionRatio: .infinity)
+
+        XCTAssertThrowsError(
+            try SaveImporter.plan(source: source, resolve: alwaysResolve, caps: caps)
+        ) { error in
+            guard let importError = error as? ImportError else {
+                return XCTFail("expected an ImportError, got \(error)")
+            }
+            guard case .archiveTooLarge = importError else {
+                return XCTFail("expected archiveTooLarge, got \(importError)")
+            }
+        }
+    }
+
+    // MARK: - I6: the discarded CRC and the EOF-is-not-an-error hole
+    //
+    // ZIPFoundation's closure-based `extract(_:bufferSize:skipCRC32:progress:consumer:)`
+    // RETURNS the CRC32 it computed while streaming rather than checking it against
+    // `entry.checksum` itself -- only the `extract(_:to:)` (file-URL) variant verifies.
+    // `plan()` used to discard that return value entirely (`_ = try archive.extract(...)`),
+    // so a corrupted or truncated entry was digested as whatever bytes happened to
+    // arrive. For an archive that carries our own manifest, `verifyDigests`'s sha256
+    // check still catches this downstream -- but spec §5's manifest-free case (a save
+    // folder zipped by hand on a desktop) has no manifest and therefore no sha256 to
+    // compare against, so the CRC check added directly in `plan()`'s extraction is the
+    // only thing standing between a damaged entry and her save directory.
+
+    /// Builds a manifest-free, stored (uncompressed) single-entry zip and then flips one
+    /// byte inside the entry's raw payload bytes on disk -- the exact technique
+    /// `generate_fixtures.py`'s `build_crc_corrupt` uses for `crc-corrupt.zip`, which is
+    /// shaped for the game-import path (a `Corrupt/` distribution root) and has no
+    /// save-slot-named entry `SaveImporter.plan` would ever look at, so it cannot be
+    /// reused here directly. Stored, not deflated, so the flip lands in the literal
+    /// payload rather than corrupting a deflate stream and failing for an unrelated
+    /// reason. The zip's own recorded CRC32 (written before the flip) then disagrees with
+    /// what streaming the post-flip bytes actually computes.
+    private func makeCRCCorruptManifestFreeZip(entryName: String = "1-1-LT1.save") throws -> URL {
+        let zip = root.appendingPathComponent("crc-corrupt-save-\(UUID().uuidString).zip")
+        let archive = try XCTUnwrap(try? Archive(url: zip, accessMode: .create))
+        let marker = Data(repeating: 0x41, count: 64)  // 64 'A' bytes, a findable run.
+        try archive.addEntry(with: entryName, type: .file,
+                             uncompressedSize: Int64(marker.count),
+                             compressionMethod: .none) { position, size in
+            marker.subdata(in: Int(position)..<(Int(position) + size))
+        }
+
+        // Manual scan rather than `firstRange(of:)`: that stdlib API needs macOS 13,
+        // above this package's macOS 11 floor (Package.swift).
+        var blob = [UInt8](try Data(contentsOf: zip))
+        let needle = [UInt8](marker)
+        var foundAt: Int?
+        if blob.count >= needle.count {
+            for start in 0...(blob.count - needle.count)
+            where Array(blob[start..<(start + needle.count)]) == needle {
+                foundAt = start
+                break
+            }
+        }
+        guard let index = foundAt else {
+            XCTFail("marker payload not found in freshly-written zip; test needs updating")
+            return zip
+        }
+        blob[index] = 0x42  // flip the first marker byte: 'A' -> 'B'
+        try Data(blob).write(to: zip)
+        return zip
+    }
+
+    func testACRCMismatchInAManifestFreeZipIsDamagedFile() throws {
+        // Hand-trace against the pre-fix code (`_ = try archive.extract(entry) { data
+        // .append($0) }`, no comparison against `entry.checksum`): ZIPFoundation's
+        // closure-based extract does not throw on a CRC mismatch by itself -- it only
+        // RETURNS the CRC it computed -- so that call reads the 64 (corrupted) bytes
+        // successfully, `data` ends up holding them, and since this zip carries no
+        // manifest, `verifyDigests` never runs (there is nothing to check the digest
+        // against). `plan()` returns a normal one-plan set with `addedCount == 1` and no
+        // error at all. `XCTAssertThrowsError` below would therefore fail with "did not
+        // throw" against that old code -- which is exactly the gap this test closes.
+        let zip = try makeCRCCorruptManifestFreeZip()
+
+        XCTAssertThrowsError(
+            try SaveImporter.plan(source: zip, resolve: alwaysResolve, caps: .default)
+        ) { error in
+            XCTAssertEqual(error as? SaveTransferError,
+                           .damagedFile(name: "1-1-LT1.save"))
+        }
+    }
+
+    func testAZeroByteSaveEntryIsRejectedNotCounted() throws {
+        // A zero-byte entry's CRC32 is trivially 0, and an entry genuinely declared as
+        // 0 bytes reads back as 0 bytes with no read error at all -- the CRC check above
+        // cannot catch this case (0 == 0), which is exactly why the empty-result guard
+        // exists as a separate check. Ren'Py never writes an empty .save (loadsave.py:110
+        // always writes a real zip), so this must be refused, not silently counted as
+        // one imported save.
+        let zip = root.appendingPathComponent("zero-byte.zip")
+        let archive = try XCTUnwrap(try? Archive(url: zip, accessMode: .create))
+        // Int64(0), not 0: a bare literal is ambiguous between this overload and
+        // ZIPFoundation's deprecated UInt32 one, and the ambiguity is a build error.
+        try archive.addEntry(with: "1-1-LT1.save", type: .file,
+                             uncompressedSize: Int64(0),
+                             compressionMethod: .none) { _, _ in Data() }
+
+        XCTAssertThrowsError(
+            try SaveImporter.plan(source: zip, resolve: alwaysResolve, caps: .default)
+        ) { error in
+            XCTAssertEqual(error as? SaveTransferError,
+                           .damagedFile(name: "1-1-LT1.save"))
+        }
+    }
+
+    func testATwoGameBackupKeepsEachGamesSavesUnderItsOwnPrefix() throws {
+        // The ambiguity this field exists to remove: both games have a save named
+        // 1-1-LT1.save, so a last-path-component match cannot tell them apart, and a
+        // restore could file alpha's save into beta's directory without erroring.
+        let alpha = root.appendingPathComponent("alpha", isDirectory: true)
+        let beta = root.appendingPathComponent("beta", isDirectory: true)
+        for dir in [alpha, beta] {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        try Data("alpha save".utf8).write(to: alpha.appendingPathComponent("1-1-LT1.save"))
+        try Data("beta save".utf8).write(to: beta.appendingPathComponent("1-1-LT1.save"))
+
+        let out = root.appendingPathComponent("backup.zip")
+        _ = try SaveExporter.export(
+            [SaveExportItem(gameId: "alpha", title: "Alpha", saveDirectory: "A", directory: alpha),
+             SaveExportItem(gameId: "beta", title: "Beta", saveDirectory: "B", directory: beta)],
+            kind: .backup, appVersion: "0.2.0", to: out, now: Date())
+
+        let set = try SaveImporter.plan(source: out, resolve: alwaysResolve, caps: .default)
+
+        XCTAssertEqual(set.plans.count, 2)
+        let prefixes = Dictionary(uniqueKeysWithValues:
+            set.plans.map { ($0.gameId ?? "?", $0.sourcePrefix) })
+        XCTAssertEqual(prefixes["alpha"], "games/alpha")
+        XCTAssertEqual(prefixes["beta"], "games/beta")
+    }
+
+    func testAGroupNamingAGameTheManifestDoesNotDescribeIsNotAttributedToTheOneItDoes() throws {
+        // A real single-game manifest plus an extra group under a different id. The
+        // extra group must NOT be folded into the manifest's game: an archive carrying
+        // our manifest imports without a foreign-file warning, so anything attributed to
+        // a real game is trusted content.
+        let source = try makeExport(names: ["1-1-LT1.save"])
+        let archive = try XCTUnwrap(try? Archive(url: source, accessMode: .update))
+        let payload = Data("injected".utf8)
+        try archive.addEntry(with: "games/mallory/9-9-LT1.save", type: .file,
+                             uncompressedSize: Int64(payload.count),
+                             compressionMethod: .none) { position, size in
+            payload.subdata(in: Int(position)..<(Int(position) + size))
+        }
+
+        let set = try SaveImporter.plan(source: source, resolve: alwaysResolve,
+                                        caps: .default)
+
+        // A loop with no assertion that it ran even once would pass whether or not
+        // "bigbaddogs" is actually among the plans -- assert the match exists first.
+        XCTAssertTrue(set.plans.contains { $0.gameId == "bigbaddogs" },
+                     "expected a plan for bigbaddogs")
+
+        for plan in set.plans where plan.gameId == "bigbaddogs" {
+            XCTAssertFalse(plan.placements.contains { $0.sourceName == "9-9-LT1.save" },
+                           "an unrelated group was attributed to the manifest's game")
+        }
+    }
+
+    func testASaveTheManifestDoesNotDescribeIsRejected() throws {
+        let source = try makeExport(names: ["1-1-LT1.save"])
+        let archive = try XCTUnwrap(try? Archive(url: source, accessMode: .update))
+        let payload = Data("injected".utf8)
+        try archive.addEntry(with: "saves/5-5-LT1.save", type: .file,
+                             uncompressedSize: Int64(payload.count),
+                             compressionMethod: .none) { position, size in
+            payload.subdata(in: Int(position)..<(Int(position) + size))
+        }
+
+        XCTAssertThrowsError(
+            try SaveImporter.plan(source: source, resolve: alwaysResolve, caps: .default)
+        ) { error in
+            XCTAssertEqual(error as? SaveTransferError,
+                           .damagedFile(name: "5-5-LT1.save"))
+        }
+    }
+
+    func testASaveTheManifestPromisedButTheArchiveLacksIsReported() throws {
+        let source = try makeExport(names: ["1-1-LT1.save", "1-2-LT1.save"])
+        let archive = try XCTUnwrap(try? Archive(url: source, accessMode: .update))
+        let entry = try XCTUnwrap(archive["saves/1-2-LT1.save"])
+        try archive.remove(entry)
+
+        XCTAssertThrowsError(
+            try SaveImporter.plan(source: source, resolve: alwaysResolve, caps: .default)
+        ) { error in
+            XCTAssertEqual(error as? SaveTransferError,
+                           .damagedFile(name: "1-2-LT1.save"))
+        }
+    }
+
+    func testADuplicateNameInTheManifestIsRefusedNotACrash() throws {
+        // Dictionary(uniqueKeysWithValues:) TRAPS on a duplicate key, purely on the
+        // repeated name -- it does not matter that both entries below agree on the
+        // digest. `expected` in `verifyDigests` is built from a manifest inside a file
+        // the reader chose to open, so this shape must not crash the app.
+        //
+        // For THIS fixture the two duplicated entries are identical, so verifyDigests
+        // does not actually throw: the reverse-direction check collapses the repeated
+        // name through a Set, and `plan()` returns a plan normally. The `catch is
+        // SaveTransferError` branch below is therefore dead code for this input -- it is
+        // kept only so a future change that makes verifyDigests reject a duplicate
+        // manifest entry outright doesn't turn this test red for the wrong reason. The
+        // one thing this test actually proves is that calling `plan` here does not trap
+        // the process. There is no way to assert that positively other than by the test
+        // process still being alive afterwards to report a result: a Swift precondition
+        // failure aborts the process outright rather than throwing or reaching any catch
+        // clause, so no in-process assertion can distinguish "this was fixed" from "this
+        // run got lucky" -- it can only distinguish "did not crash" from "did crash",
+        // and only by virtue of the test finishing at all.
+        let source = try makeExport(names: ["1-1-LT1.save"])
+
+        let archive = try XCTUnwrap(try? Archive(url: source, accessMode: .update))
+        let manifestEntry = try XCTUnwrap(archive[SaveManifest.fileName])
+        var manifestData = Data()
+        _ = try? archive.extract(manifestEntry) { manifestData.append($0) }
+        var manifest = try SaveManifest.decode(manifestData)
+        // Duplicate the one file entry under the same name -- the manifest now lists
+        // "1-1-LT1.save" twice for the same game.
+        manifest.games[0].files.append(manifest.games[0].files[0])
+        let newManifestData = try SaveManifest.encode(manifest)
+
+        try archive.remove(manifestEntry)
+        try archive.addEntry(with: SaveManifest.fileName, type: .file,
+                             uncompressedSize: Int64(newManifestData.count),
+                             compressionMethod: .deflate) { position, size in
+            newManifestData.subdata(in: Int(position)..<(Int(position) + size))
+        }
+
+        // Must not trap. A plan comes back for this exact fixture (see above); the catch
+        // is kept for a stricter future verifyDigests, not because it fires here.
+        do {
+            _ = try SaveImporter.plan(source: source, resolve: alwaysResolve, caps: .default)
+        } catch is SaveTransferError {
+            // Not reached by this fixture. Kept for generality only.
+        }
+    }
+
+    /// Replace one entry's bytes so its digest no longer matches the manifest.
+    private func corrupt(entry path: String, in zip: URL) throws {
+        let archive = try XCTUnwrap(try? Archive(url: zip, accessMode: .update))
+        let entry = try XCTUnwrap(archive[path])
+        try archive.remove(entry)
+        let payload = Data("tampered".utf8)
+        try archive.addEntry(with: path, type: .file,
+                             uncompressedSize: Int64(payload.count),
+                             compressionMethod: .none) { position, size in
+            payload.subdata(in: Int(position)..<(Int(position) + size))
+        }
+    }
+}

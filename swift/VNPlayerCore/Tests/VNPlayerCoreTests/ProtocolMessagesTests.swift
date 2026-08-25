@@ -181,4 +181,33 @@ final class ProtocolMessagesTests: XCTestCase {
         XCTAssertEqual(drained.first?.payload["name"] as? String, "launch")
         XCTAssertNotNil(drained.first?.payload["args"] as? [String: Any])
     }
+
+    func testGameReadyCarriesTheSaveDirectory() {
+        let payload: [String: Any] = [
+            "event": "gameReady",
+            "gameId": "bigbaddogs",
+            "saveDirectory": "BigBadDogs-1489443940",
+        ]
+        XCTAssertEqual(ProtocolMessages.gameReadySaveDirectory(payload),
+                       "BigBadDogs-1489443940")
+    }
+
+    func testAMissingOrNullSaveDirectoryReadsAsNil() {
+        XCTAssertNil(ProtocolMessages.gameReadySaveDirectory(["event": "gameReady"]))
+        XCTAssertNil(ProtocolMessages.gameReadySaveDirectory(
+            ["event": "gameReady", "saveDirectory": NSNull()]))
+        XCTAssertNil(ProtocolMessages.gameReadySaveDirectory(
+            ["event": "gameReady", "saveDirectory": ""]))
+    }
+
+    func testALibraryEntryWrittenBeforeThisFieldExistedStillDecodes() throws {
+        // There is a library.json on the device right now with no saveDirectory key.
+        // A non-optional property would make the whole library fail to load.
+        let json = """
+        {"id":"a","title":"A","sizeBytes":1,"addedAt":0,
+         "detectedEngine":"renpy8","importedComplete":true,"crashCount":0}
+        """
+        let entry = try JSONDecoder().decode(LibraryEntry.self, from: Data(json.utf8))
+        XCTAssertNil(entry.saveDirectory)
+    }
 }

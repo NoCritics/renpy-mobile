@@ -219,11 +219,27 @@ def announce_game_ready() -> None:
     # quitToLibrary just as "the game is interacting" is for launch.
     event = "gameReady" if STATE.current_game_id else "shellReady"
 
+    # config.save_directory is knowable only from the running engine -- the game sets it
+    # in its own Python, so it cannot be read out of the archive at import time. It rides
+    # out on the event that already says the game is up rather than opening a channel for
+    # one string. None is a legitimate value (renpy/config.py:369) and must survive as
+    # null rather than as the string "None": the export note uses it to name a folder.
+    save_directory = None
+    if STATE.current_game_id:
+        try:
+            import renpy  # type: ignore
+
+            value = renpy.config.save_directory
+            save_directory = str(value) if value else None
+        except Exception:  # noqa: BLE001 - never let this stop the ready announcement
+            save_directory = None
+
     _EVENTS.emit(
         {
             "event": event,
             "commandId": _pending_command_id,
             "gameId": STATE.current_game_id,
+            "saveDirectory": save_directory,
         }
     )
 

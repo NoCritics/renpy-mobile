@@ -5,38 +5,101 @@
 ## In one paragraph
 
 VNPlayer is a free, open-source iOS player for Ren'Py 8 visual novels. Milestone B is
-merged and released as **v0.1.0**. **M2 (library and import) is done and device-confirmed**:
-a 1.2 GB commercial game imports from a `.zip`, launches, and is playable by touch on an
-iPhone 13 Pro Max. **M3 (in-game overlay) is on a device and working** — roll back, skip and the
-control strip are confirmed; the three icons that open the game's own Save, Load and
-Preferences pages are built and green in CI but untested on hardware. Everything lives on `milestone-c/library-and-import`; `main` is still at the
-Milestone B merge.
+merged and released as **v0.1.0**. **M2 (library and import) is device-confirmed.**
+**M3 (in-game overlay)** — roll back, skip, the control strip, and the three icons that
+open the game's own Save, Load and Preferences pages — is device-confirmed except for
+three small checks noted below that were never closed out. **M4 (save export and import)
+is code-complete and green in CI, and has not touched a device at all.** Everything lives
+on `milestone-d/save-transfer`; `main` is still at the Milestone B merge.
 
 ## The build to install
 
-**Run `32854597268`**, branch `milestone-c/library-and-import`, artifact `VNPlayer-ipa`
-(28,731,312 bytes). Sideloadly as usual — `docs/INSTALL.md`.
+**Run `32883536254`**, branch `milestone-d/save-transfer`, artifact `VNPlayer-ipa`
+(28,811,101 bytes). Sideloadly as usual — `docs/INSTALL.md`.
 
-## What to check, in order
+## What M4 added
 
-Device-confirmed on run `32854597268`: roll back, skip, the strip and its new order, the
-three icons that open the game's own Save, Load and Preferences pages, and one clean run
-of Add game. Two checks are still open, plus one thing that only looks settled.
+Each game can now export its own saves to a `.zip` file that a PC can open directly — no
+special tool needed on the desktop side. There's also a whole-library backup, which does
+the same thing for every game at once. Both can be imported back: either that `.zip`, or a
+bare Ren'Py `.save` file with nothing else around it. Before anything is actually imported
+or exported, a confirmation screen previews exactly what is about to happen — which saves,
+how many, for which game — so nothing moves without you seeing it first. If a file being
+imported can't say for itself which game it belongs to (a bare `.save`, or a hand-made
+`.zip` with no VNPlayer manifest inside it), the app asks you to pick from your installed
+games instead of guessing.
 
-1. **The Add game picker is NOT proven fixed.** The bug was intermittent — repeated
-   attempts or an app restart — so a working run is what it did before, some of the time.
-   It is confirmed only after the picker has been used several times across separate app
-   launches without a bad one. If it does misbehave again, **capture a device log while it
-   is happening**; three argument-free lines say which half is at fault, and they are the
-   only way to tell:
-   `importer: opening` / `importer: already open, ignoring` / `importer: picked a file`.
-   `opening` with no pick following means the provider listed nothing and the cause is not
-   ours; `already open, ignoring` means the re-presentation guard was the real fix.
-2. **Library from inside a menu page.** `quitToLibrary` raises through the nested menu
-   context. `call_in_new_context` pops in a `finally`, so it should unwind clean — but
-   that is reasoning, not evidence, and this is the check that turns it into evidence.
-3. **Magnifier**: zoom, pan, Done. Watch whether the game still responds correctly after
-   exiting, and whether panning ever scrolls dialogue backwards (it must not).
+The in-game control strip changed too: quick save and quick load are gone from it, and
+export and import take their place.
+
+## Device checklist for M4 — nothing below has been checked on a phone yet
+
+This is code that has only ever run in GitHub's CI, never on real hardware, never against
+a real file system, real iCloud, or a real second device. Everything here needs someone
+with an iPhone to actually try it. Run these in order — each one only assumes the ones
+before it.
+
+1. **Export a game that already has real saves on it**, using two different destinations
+   in turn: AirDrop to a PC, and Save to Files (into iCloud Drive). Wait for each transfer
+   to fully finish on the receiving end before judging it.
+   - *Baseline:* unzip the AirDropped file into the folder named inside its own
+     `WHERE-TO-PUT-THESE.txt`. The desktop game should then list those same save slots.
+   - *Note:* this was flagged in review and fixed before merge. The app used to delete its
+     own temporary copy of the export the moment you dismiss the share sheet — not when
+     the transfer had actually finished — and AirDrop and iCloud both keep copying in the
+     background after that sheet closes, so a too-early delete could have truncated the
+     file. It no longer deletes on dismiss; a startup sweep removes the temporary copy on
+     the next launch instead. Still worth checking on device: both destinations should
+     arrive whole, and the temporary file should be gone after relaunching the app once
+     the transfer is well clear.
+2. **Export a game that has never been launched**, so it has no saves at all. This should
+   be refused with a plain sentence explaining why. It must not hand you an empty `.zip`
+   file as if that were a normal export — an empty file that *looks* successful is the
+   failure mode to watch for.
+3. **On a computer, by hand, make a `.zip`** from a copy of a real Ren'Py desktop save
+   folder — not one exported from the phone. Send it to the phone and use Import saves.
+   The save slots from that `.zip` should appear in the phone's library, against the right
+   game. Because this file did not come from VNPlayer, a one-time warning should appear
+   saying so. Check that it shows exactly once for this import, not again on every screen
+   after.
+4. **Using that same import from check 3:** compare the numbers shown on the confirmation
+   screen before you tapped Import (how many saves, which slots) against the sentence
+   shown afterward describing what happened. They should describe the same thing.
+5. **With two or more games installed, import a bare `.save` file** — not a `.zip`, just
+   the single file Ren'Py writes directly into its own save folder. The app has no way to
+   tell which game that file belongs to, so it should ask you to choose from your
+   installed games, then show the ordinary import confirmation for the game you picked.
+   - *Extra care needed here:* the "which game" chooser and the import confirmation are
+     two separate popups controlled by the same piece of code. Watch this handoff
+     closely — the chooser should fully close before the confirmation appears, the
+     confirmation should name the game you actually picked, and the two should never
+     appear stacked on top of each other or flash into one another.
+6. **Back up the whole library** (every game in one go). Then remove one game from the
+   library completely, add it back as if it were new, and restore from that backup. That
+   game's saves should reappear.
+7. **Import that same whole-library backup a second time**, without changing anything
+   first. It should tell you it's already here and add nothing new — no duplicated save
+   slots, and no error.
+8. **While a game is actually running**, use Import saves from the control strip along the
+   edge of the screen — not from the library list. It should leave the running game and
+   return you to the library first, then open the file picker. It must not try to import
+   while a game is still on screen underneath.
+9. **Revisit any import above that used a file stored in iCloud** rather than fully
+   downloaded onto the phone (this can apply to checks 3, 5, 6, or 7). Deliberately pause
+   for a while on the confirmation screen before tapping Import — long enough that iOS
+   could reasonably decide it's done handing the file over. If that pause breaks the
+   import, the failure should look like a plain message — something like "That file could
+   not be opened" — never a crash. Separately, note whether a `.save` file that didn't
+   arrive through the Files app in the first place (for example, AirDropped straight to the
+   phone rather than saved into Files first) even shows up in the picker at all. Some
+   sources won't offer it the file type the picker is asking for — that's expected
+   behaviour to note, not a bug to chase.
+
+None of these nine checks is about anything your sister would normally do by accident —
+export and import are both deliberate actions behind their own buttons, with a
+confirmation in front of each. But checks 3 and 5 are exactly what would happen if she,
+or you, ever had to rebuild her phone from an old backup made on a PC, so they're worth
+taking seriously rather than treating as edge cases.
 
 ## The bug worth remembering
 
@@ -99,15 +162,30 @@ working and silently breaks quit-to-library. There is deliberately no such wrapp
 
 ## Still open
 
-- **The Add game picker fix is unconfirmed** — item 1 above. Intermittent bugs are not
-  disproved by a good run.
-- Library from inside a game menu page, and the magnifier's exit state.
-- Whether the magnifier leaves SDL in a good state after exiting.
-- **Cover art**, re-import/update, rename, app settings: not built.
-- **Export saves** deferred, by your call. Saves already sit in `Documents/Saves/<gameId>/`
-  and are visible in the Files app, so the manual route works today. The open question
-  that decides its urgency: **does a Sideloadly re-sign at the 7-day expiry preserve the
-  Data container, or wipe it?** Worth answering on the next expiry cycle.
+- **All nine checks above.** M4 has never run outside CI.
+- **Whether a Sideloadly re-sign at the 7-day expiry preserves `Documents/Saves/`, or wipes
+  it, is still unanswered.** It needs a real expiry cycle to test: re-sign, then look. M4's
+  export/backup feature now gives you a way to protect saves against that regardless of the
+  answer, but the underlying fact about what Sideloadly does is still not known.
+- **Three M3 device checks were never closed out** and remain open in the background:
+  whether the Add game picker's fix is proven (it was an intermittent bug, so one clean run
+  doesn't prove it — it needs repeated use across separate app launches without a bad one);
+  quitting to the library from inside a game's own menu page; and whether the magnifier
+  leaves the game in a good state, visually and technically, after you back out of it.
+- **A handful of small gaps found during M4's review, none of them dangerous:**
+  if an import fails partway through a multi-save batch, the saves that already copied
+  before the failure stay copied — it does not undo them. Exporting the same game twice on
+  the same calendar day can produce a filename collision, though the export flow's own
+  modal presentation makes it hard to trigger by accident. A multi-game backup's
+  confirmation message reads awkwardly, as several game-by-game questions stitched
+  together, rather than one clean sentence. Importing a foreign save (one with no
+  VNPlayer manifest) never names its game in the "done" summary unless it went through the
+  "which game" chooser, which does name it. And an archive whose manifest fails to
+  describe one of its own save groups — hand-edited or corrupted — silently drops that
+  group: nothing wrong gets written, but the group is neither imported nor mentioned,
+  which could read as your saves vanishing when they were never touched.
+- **Cover art**, re-import/update of a game itself, rename, and app settings: still not
+  built.
 - Ren'Py 7 support: refused with a message, by design.
 - `device_log.sh` should pass `-a` to grep; game output can be non-UTF-8 and the summary
   currently warns "binary file matches".
@@ -118,10 +196,10 @@ working and silently breaks quit-to-library. There is deliberately no such wrapp
 shell/            the engine shell that ships inside the app (Python)
   vnshell/        lifecycle, purge, transports, platform, mailbox
   vnplayer_hook.rpe.py   loaded by Ren'Py for EVERY game; keeps the command channel alive
-swift/VNPlayerCore/    pure logic + vendored ZIPFoundation, tested headlessly (90 tests)
+swift/VNPlayerCore/    pure logic + vendored ZIPFoundation, tested headlessly (154 tests)
 spike/            the iOS app layer (windows, SwiftUI, overlay) and its XcodeGen project
 scripts/ios/      fetch, generate, overlay, patch, package, device log
-tests/            Python suite (76 tests), including the protocol contract fixtures
-docs/superpowers/specs/   M2 and M3 designs, both consultation-reviewed
+tests/            Python suite (79 tests), including the protocol contract fixtures
+docs/superpowers/specs/   M2, M3 and M4 designs, all consultation-reviewed
 harness/          desktop cycling rig
 ```
