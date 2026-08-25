@@ -19,32 +19,23 @@ Milestone B merge.
 
 ## What to check, in order
 
-Confirmed on device: roll back, skip, the strip, and the three icons that open the game's
-own Save, Load and Preferences pages. What is untested is the strip's new order and one
-attempted fix.
+Device-confirmed on run `32854597268`: roll back, skip, the strip and its new order, the
+three icons that open the game's own Save, Load and Preferences pages, and one clean run
+of Add game. Two checks are still open, plus one thing that only looks settled.
 
-1. **The strip reads top to bottom**: roll back, skip ┊ save, load, settings ┊ magnify,
-   library ┊ quick save, quick load. The last pair moved to the bottom because their old
-   icons — `square.and.arrow.up` is the iOS *share* glyph — read as file export and
-   import. Their symbols changed too, to plain arrows-to-a-line.
-2. **THE OPEN BUG: after tapping Add game the `.zip` files are sometimes not listed**, and
-   it takes repeated attempts or an app restart before they appear. Two candidate causes
-   were both addressed blind, because neither is reproducible off-device:
-   - the picker filtered on `.zip` alone, and a provider that has not yet typed a file
-     lists it greyed out and untappable — indistinguishable from absent. Now accepts the
-     archive types and the extension-derived type as well.
-   - `beginImport()` re-presented unconditionally; setting an already-true SwiftUI
-     `isPresented` does nothing, and the dismissal that follows leaves a picker that never
-     opens again.
-   **Capture a device log while reproducing it.** Three new argument-free lines say which
-   half is at fault, and they are the whole point of this build:
+1. **The Add game picker is NOT proven fixed.** The bug was intermittent — repeated
+   attempts or an app restart — so a working run is what it did before, some of the time.
+   It is confirmed only after the picker has been used several times across separate app
+   launches without a bad one. If it does misbehave again, **capture a device log while it
+   is happening**; three argument-free lines say which half is at fault, and they are the
+   only way to tell:
    `importer: opening` / `importer: already open, ignoring` / `importer: picked a file`.
-   If `opening` appears and no file is ever picked, the provider listed nothing and the
-   problem is not ours. If `already open, ignoring` appears, the second cause was real.
-3. **Library from inside a menu page.** `quitToLibrary` raises through the nested menu
+   `opening` with no pick following means the provider listed nothing and the cause is not
+   ours; `already open, ignoring` means the re-presentation guard was the real fix.
+2. **Library from inside a menu page.** `quitToLibrary` raises through the nested menu
    context. `call_in_new_context` pops in a `finally`, so it should unwind clean — but
    that is reasoning, not evidence, and this is the check that turns it into evidence.
-4. **Magnifier**: zoom, pan, Done. Watch whether the game still responds correctly after
+3. **Magnifier**: zoom, pan, Done. Watch whether the game still responds correctly after
    exiting, and whether panning ever scrolls dialogue backwards (it must not).
 
 ## The bug worth remembering
@@ -108,8 +99,9 @@ working and silently breaks quit-to-library. There is deliberately no such wrapp
 
 ## Still open
 
-- **The Add game picker sometimes lists no files** — item 2 above, fixed blind, unconfirmed.
-- The strip's new order and the two replaced symbols have not been on a device.
+- **The Add game picker fix is unconfirmed** — item 1 above. Intermittent bugs are not
+  disproved by a good run.
+- Library from inside a game menu page, and the magnifier's exit state.
 - Whether the magnifier leaves SDL in a good state after exiting.
 - **Cover art**, re-import/update, rename, app settings: not built.
 - **Export saves** deferred, by your call. Saves already sit in `Documents/Saves/<gameId>/`
