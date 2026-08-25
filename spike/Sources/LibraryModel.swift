@@ -206,12 +206,14 @@ final class LibraryModel: ObservableObject {
         try? Data(entry.id.utf8).write(to: paths.launchSentinel, options: .atomic)
 
         do {
-            try commands.write([
-                "commandId": commandId,
-                "command": "launch",
-                "gameId": entry.id,
-                "basedir": paths.gameDirectory(entry.id).path,
-            ])
+            // Built by ProtocolMessages, in the tested target, rather than inline
+            // here. Inline is how the shapes drifted: this app target has no tests, so
+            // nothing asserted what crossed the boundary.
+            try commands.write(ProtocolMessages.launch(
+                commandId: commandId,
+                gameId: entry.id,
+                basedir: paths.gameDirectory(entry.id).path
+            ))
             phase = .launching(gameId: entry.id, since: Date())
         } catch {
             try? FileManager.default.removeItem(at: paths.launchSentinel)
@@ -222,7 +224,7 @@ final class LibraryModel: ObservableObject {
 
     func returnToLibrary() {
         guard let commands else { return }
-        try? commands.write(["commandId": UUID().uuidString, "command": "quitToLibrary"])
+        try? commands.write(ProtocolMessages.quitToLibrary(commandId: UUID().uuidString))
         phase = .idle
         coordinator?.setLibraryVisible(true)
     }
@@ -242,8 +244,9 @@ final class LibraryModel: ObservableObject {
         guard let events else { return }
 
         for message in events.drain() {
-            guard let name = message.payload["event"] as? String else { continue }
-            let commandId = message.payload["commandId"] as? String
+            guard let parsed = ProtocolMessages.parseEvent(message.payload) else { continue }
+            let name = parsed.name
+            let commandId = parsed.commandId
 
             // Events from an abandoned launch arrive late and would otherwise dismiss
             // the library out from under a different one.

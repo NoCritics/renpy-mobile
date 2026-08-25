@@ -1,0 +1,8 @@
+{
+  "name": "launch",
+  "args": {
+    "commandId": "5E3B0F4A-1C2D-4E5F-8A9B-0C1D2E3F4A5B",
+    "gameId": "bigbaddogs",
+    "basedir": "/var/mobile/Containers/Data/Application/UUID/Documents/Games/bigbaddogs"
+  }
+}

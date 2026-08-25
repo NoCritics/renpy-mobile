@@ -431,9 +431,21 @@ disturbed.
 
 ### 10.2 Messages
 
+**The command shape below is `name`/`args`, and an earlier draft of this section got it
+wrong.** It documented a flat `{"command": "launch", ...}`, but `vnshell.mailbox`
+has read `entry["name"]` and `entry["args"]` since Milestone A. Implemented as written,
+every command was consumed by the transport and then dropped by the mailbox — whose
+"no name key" branch returned `None` in silence — and the device showed a launch button
+that did nothing until it timed out. Pinned now by `tests/protocol/*.json`, with
+`tests/test_protocol.py` asserting Python accepts the shape and
+`ProtocolMessagesTests.swift` asserting Swift produces it.
+
+Note the asymmetry: commands are nested because the mailbox contract requires it, events
+are flat because they do not go through the mailbox at all.
+
 ```json
-Commands/  {"commandId": "...", "command": "launch", "basedir": "...", "gameId": "..."}
-           {"commandId": "...", "command": "quitToLibrary"}
+Commands/  {"name": "launch", "args": {"commandId": "...", "gameId": "...", "basedir": "..."}}
+           {"name": "quitToLibrary", "args": {"commandId": "..."}}
 
 Events/    {"commandId": "...", "event": "launchAccepted"}
            {"commandId": "...", "event": "gameReady",  "gameId": "..."}
