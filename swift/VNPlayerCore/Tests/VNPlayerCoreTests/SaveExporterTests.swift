@@ -101,6 +101,30 @@ final class SaveExporterTests: XCTestCase {
         XCTAssertNil(try SaveManifest.decode(data).games[0].saveDirectory)
     }
 
+    /// C1's fixture had every other test default to `saveDirectory: "BBD-1"`, so the null
+    /// branch of `DesktopSaveLocations.instructions` -- the branch every real game hits
+    /// today, because nothing ever wrote `LibraryEntry.saveDirectory` -- was invisible in
+    /// this suite. `testANullSaveDirectorySurvivesIntoTheManifest` above only checks the
+    /// manifest field; this checks the actual note text a reader would read, so the two
+    /// branches are distinguishable in the suite rather than only the non-null one being
+    /// exercised.
+    func testANullSaveDirectoryProducesTheNullBranchNote() throws {
+        let dir = try makeSaveDirectory(["1-1-LT1.save"])
+        let out = root.appendingPathComponent("out.zip")
+        _ = try SaveExporter.export([item(dir, saveDirectory: nil)], kind: .game,
+                                    appVersion: "0.2.0", to: out, now: Date())
+
+        let archive = try XCTUnwrap(try? Archive(url: out, accessMode: .read))
+        let entry = try XCTUnwrap(archive["WHERE-TO-PUT-THESE.txt"])
+        var data = Data()
+        _ = try archive.extract(entry) { data.append($0) }
+        let note = String(decoding: data, as: UTF8.self)
+
+        XCTAssertTrue(note.contains("does not set a save folder name of its own"), note)
+        XCTAssertFalse(note.contains("%APPDATA%"),
+                       "a nil saveDirectory must not fall through to the desktop-path branch")
+    }
+
     func testExportingAGameWithNoSavesIsRefusedInWords() throws {
         let dir = try makeSaveDirectory([])
         let out = root.appendingPathComponent("out.zip")

@@ -45,6 +45,43 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.first?.detectedEngine, .renpy8)
     }
 
+    /// The join C1 was missing: Task 7 built `ProtocolMessages.gameReadySaveDirectory`,
+    /// Task 8 read `LibraryEntry.saveDirectory`, and nothing ever wrote the field onto a
+    /// stored entry. `LibraryModel.swift`'s `gameReady` handler is the actual call site,
+    /// but it lives in `spike/`, which has no XCTest target at all -- so this exercises
+    /// the closest reachable seam: extracting the directory from a real `gameReady`
+    /// payload via `ProtocolMessages.gameReadySaveDirectory`, then joining it onto the
+    /// stored entry through the same `LibraryStore.upsert` path `LibraryModel` uses.
+    /// A regression in the glue code itself (wrong id, wrong guard) is NOT caught by
+    /// this test -- only a regression in the join's two halves would be.
+    func testGameReadySaveDirectoryIsJoinedOntoStoredEntry() throws {
+        try makeGameDirectory("bigbaddogs")
+        _ = try store.upsert(LibraryEntry(id: "bigbaddogs", title: "Big Bad Dogs"))
+
+        let payload: [String: Any] = [
+            "event": "gameReady",
+            "commandId": "abc",
+            "saveDirectory": "BigBadDogs-1489443940",
+        ]
+
+        guard let directory = ProtocolMessages.gameReadySaveDirectory(payload) else {
+            XCTFail("expected a save directory from the payload")
+            return
+        }
+
+        var entries = store.load()
+        guard let index = entries.firstIndex(where: { $0.id == "bigbaddogs" }) else {
+            XCTFail("entry not found")
+            return
+        }
+        entries[index].saveDirectory = directory
+        _ = try store.upsert(entries[index])
+
+        let reloaded = LibraryStore(paths: paths).load()
+        XCTAssertEqual(reloaded.first(where: { $0.id == "bigbaddogs" })?.saveDirectory,
+                       "BigBadDogs-1489443940")
+    }
+
     func testCorruptIndexRebuildsFromManifestsWithMetadataIntact() throws {
         try makeGameDirectory("mygame")
         _ = try store.upsert(LibraryEntry(

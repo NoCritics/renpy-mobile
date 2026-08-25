@@ -370,6 +370,23 @@ final class LibraryModel: ObservableObject {
                 guard commandId == pendingCommandId else { continue }
                 if case .launching(let gameId, _) = phase {
                     try? paths.map { try? FileManager.default.removeItem(at: $0.launchSentinel) }
+
+                    // Spec §3.1: the engine is the only source for config.save_directory,
+                    // and it only ever says so at gameReady. Joined onto the library entry
+                    // here so the export manifest (and WHERE-TO-PUT-THESE.txt) can name the
+                    // reader's real desktop folder instead of falling back to the null
+                    // branch for every game, forever.
+                    if let directory = ProtocolMessages.gameReadySaveDirectory(message.payload),
+                       let store,
+                       let index = entries.firstIndex(where: { $0.id == gameId }),
+                       entries[index].saveDirectory != directory {
+                        var updated = entries[index]
+                        updated.saveDirectory = directory
+                        if let saved = try? store.upsert(updated) {
+                            entries = saved
+                        }
+                    }
+
                     phase = .playing(gameId: gameId)
                     applyWindowState()
                     gameStarts += 1
