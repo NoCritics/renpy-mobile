@@ -1,5 +1,12 @@
 import Foundation
+
+// These sources build two ways: as a SwiftPM target (where ZIPFoundation is a separate
+// module and must be imported) and compiled directly into the iOS app target alongside
+// ZIPFoundation's own sources (where it is not a module at all, and importing it is an
+// error). canImport picks correctly in both, without a second copy of the file.
+#if canImport(ZIPFoundation)
 import ZIPFoundation
+#endif
 
 /// What an archive turned out to contain, decided before a single byte is written.
 public struct ImportPlan {
