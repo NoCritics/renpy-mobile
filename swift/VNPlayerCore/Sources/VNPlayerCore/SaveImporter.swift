@@ -164,11 +164,19 @@ public enum SaveImporter {
         let games = manifest?.games ?? []
 
         for (key, incoming) in byGame.sorted(by: { $0.key < $1.key }) {
-            let game = games.first { $0.gameId == key } ?? (games.count == 1 ? games[0] : nil)
+            // The fallback is ONLY for our own single-game export, where saves sit under
+            // `saves/` and there is no `games/<id>/` component to match a manifest entry
+            // against. Letting it catch any unmatched key means a group at
+            // `games/somethingelse/` is silently attributed to the one game in the
+            // manifest -- and since the archive carries our manifest, it imports with no
+            // warning. An unmatched non-empty key names a game this archive does not
+            // describe, and must not be guessed at.
+            let game = games.first { $0.gameId == key }
+                ?? (key.isEmpty && games.count == 1 ? games[0] : nil)
             let prefix = groupPrefix[key] ?? ""
 
-            if let manifest, let game {
-                try verifyDigests(incoming, against: game, manifest: manifest)
+            if let game {
+                try verifyDigests(incoming, against: game)
             }
 
             let draft = SaveImportPlan(gameId: game?.gameId, title: game?.title,
@@ -204,14 +212,29 @@ public enum SaveImporter {
 
     private static func verifyDigests(
         _ incoming: [(name: String, digest: String)],
-        against game: SaveManifest.Game,
-        manifest: SaveManifest
+        against game: SaveManifest.Game
     ) throws {
-        let expected = Dictionary(uniqueKeysWithValues: game.files.map { ($0.name, $0.sha256) })
+        let expected = Dictionary(uniqueKeysWithValues:
+            game.files.map { ($0.name, $0.sha256) })
+
         for file in incoming {
-            if let want = expected[file.name], want != file.digest {
+            guard let want = expected[file.name] else {
+                // The archive carries our manifest, which means it imports with no
+                // warning at all -- so a file the manifest does not describe cannot be
+                // waved through. It is not what the file claims to be.
                 throw SaveTransferError.damagedFile(name: file.name)
             }
+            if want != file.digest {
+                throw SaveTransferError.damagedFile(name: file.name)
+            }
+        }
+
+        // The other direction, which iterating `incoming` alone cannot see: a save the
+        // manifest promised and the archive does not contain. Silence here means a
+        // reader restores a backup and never learns part of it did not arrive.
+        let present = Set(incoming.map(\.name))
+        for file in game.files where !present.contains(file.name) {
+            throw SaveTransferError.damagedFile(name: file.name)
         }
     }
 

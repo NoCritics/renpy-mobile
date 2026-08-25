@@ -128,6 +128,7 @@ final class SaveImporterPlanTests: XCTestCase {
         XCTAssertTrue(set.isForeign)
         XCTAssertEqual(set.plans[0].addedCount, 1,
                        "save files must be found at any depth")
+        XCTAssertEqual(set.plans[0].sourcePrefix, "some/folder")
     }
 
     func testAGameArchiveIsRejectedByNameNotGenerically() throws {
@@ -207,6 +208,61 @@ final class SaveImporterPlanTests: XCTestCase {
             set.plans.map { ($0.gameId ?? "?", $0.sourcePrefix) })
         XCTAssertEqual(prefixes["alpha"], "games/alpha")
         XCTAssertEqual(prefixes["beta"], "games/beta")
+    }
+
+    func testAGroupNamingAGameTheManifestDoesNotDescribeIsNotAttributedToTheOneItDoes() throws {
+        // A real single-game manifest plus an extra group under a different id. The
+        // extra group must NOT be folded into the manifest's game: an archive carrying
+        // our manifest imports without a foreign-file warning, so anything attributed to
+        // a real game is trusted content.
+        let source = try makeExport(names: ["1-1-LT1.save"])
+        let archive = try XCTUnwrap(try? Archive(url: source, accessMode: .update))
+        let payload = Data("injected".utf8)
+        try archive.addEntry(with: "games/mallory/9-9-LT1.save", type: .file,
+                             uncompressedSize: Int64(payload.count),
+                             compressionMethod: .none) { position, size in
+            payload.subdata(in: Int(position)..<(Int(position) + size))
+        }
+
+        let set = try SaveImporter.plan(source: source, resolve: alwaysResolve,
+                                        caps: .default)
+
+        for plan in set.plans where plan.gameId == "bigbaddogs" {
+            XCTAssertFalse(plan.placements.contains { $0.sourceName == "9-9-LT1.save" },
+                           "an unrelated group was attributed to the manifest's game")
+        }
+    }
+
+    func testASaveTheManifestDoesNotDescribeIsRejected() throws {
+        let source = try makeExport(names: ["1-1-LT1.save"])
+        let archive = try XCTUnwrap(try? Archive(url: source, accessMode: .update))
+        let payload = Data("injected".utf8)
+        try archive.addEntry(with: "saves/5-5-LT1.save", type: .file,
+                             uncompressedSize: Int64(payload.count),
+                             compressionMethod: .none) { position, size in
+            payload.subdata(in: Int(position)..<(Int(position) + size))
+        }
+
+        XCTAssertThrowsError(
+            try SaveImporter.plan(source: source, resolve: alwaysResolve, caps: .default)
+        ) { error in
+            XCTAssertEqual(error as? SaveTransferError,
+                           .damagedFile(name: "5-5-LT1.save"))
+        }
+    }
+
+    func testASaveTheManifestPromisedButTheArchiveLacksIsReported() throws {
+        let source = try makeExport(names: ["1-1-LT1.save", "1-2-LT1.save"])
+        let archive = try XCTUnwrap(try? Archive(url: source, accessMode: .update))
+        let entry = try XCTUnwrap(archive["saves/1-2-LT1.save"])
+        try archive.remove(entry)
+
+        XCTAssertThrowsError(
+            try SaveImporter.plan(source: source, resolve: alwaysResolve, caps: .default)
+        ) { error in
+            XCTAssertEqual(error as? SaveTransferError,
+                           .damagedFile(name: "1-2-LT1.save"))
+        }
     }
 
     /// Replace one entry's bytes so its digest no longer matches the manifest.
