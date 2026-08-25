@@ -196,6 +196,8 @@ final class ProtocolMessagesTests: XCTestCase {
         XCTAssertNil(ProtocolMessages.gameReadySaveDirectory(["event": "gameReady"]))
         XCTAssertNil(ProtocolMessages.gameReadySaveDirectory(
             ["event": "gameReady", "saveDirectory": NSNull()]))
+        XCTAssertNil(ProtocolMessages.gameReadySaveDirectory(
+            ["event": "gameReady", "saveDirectory": ""]))
     }
 
     func testALibraryEntryWrittenBeforeThisFieldExistedStillDecodes() throws {

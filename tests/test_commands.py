@@ -422,7 +422,14 @@ class GameReadySaveDirectoryTests(unittest.TestCase):
         self.assertIsNone(self.events.events[0]["saveDirectory"])
 
     def test_shell_ready_has_no_save_directory_to_report(self):
-        sys.modules["renpy"] = fake_renpy()
+        # The sentinel is the whole test. Without it, config has no save_directory at all,
+        # so removing the current_game_id guard raises AttributeError, the catch-all
+        # swallows it, and the result is None either way -- the test passes against the
+        # broken version. With a value present, an unguarded read reports the previous
+        # game's directory, which is exactly the leak the guard prevents.
+        module = fake_renpy()
+        module.config.save_directory = "leftover-from-the-previous-game"
+        sys.modules["renpy"] = module
         STATE.current_game_id = None
 
         lifecycle.announce_game_ready()
