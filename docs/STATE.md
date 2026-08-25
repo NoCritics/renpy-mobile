@@ -14,8 +14,13 @@ on `milestone-d/save-transfer`; `main` is still at the Milestone B merge.
 
 ## The build to install
 
-**Run `32883536254`**, branch `milestone-d/save-transfer`, artifact `VNPlayer-ipa`
-(28,811,101 bytes). Sideloadly as usual — `docs/INSTALL.md`.
+**Run `32889818351`**, branch `main`, artifact `VNPlayer-ipa` (28,813,221 bytes).
+Sideloadly as usual — `docs/INSTALL.md`.
+
+That size is worth knowing: a `main` build that comes back around **27.5 MB** is stock
+Ren'Py with none of our Swift compiled in. Three workflow steps used to be gated to
+feature branches only, so `main` and release tags produced an app-shaped file containing
+none of the app. Fixed, but the size is the tell if it ever regresses.
 
 ## What M4 added
 
