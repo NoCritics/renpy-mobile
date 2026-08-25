@@ -80,12 +80,12 @@ public final class VNPlayerCoordinator {
     /// overlay open. Collapsing them into "is the library visible" is what produced an
     /// overlay that passed touches through while open — dismissing it by tapping outside
     /// would also have advanced the game's dialogue.
-    func applyWindow(passthrough: Bool, showHandle: Bool, makeKey: Bool) {
+    func applyWindow(passthrough: Bool, showControls: Bool, makeKey: Bool) {
         guard let window else { return }
 
         window.passthroughEnabled = passthrough
         (window.rootViewController as? VNPlayerRootViewController)?
-            .setHandleVisible(showHandle)
+            .setControlsVisible(showControls)
 
         if makeKey {
             window.makeKey()
@@ -186,7 +186,7 @@ public final class VNPlayerRootViewController: UIViewController {
 
     private let model: LibraryModel
     private(set) var hostingView: UIView?
-    private weak var returnButton: UIButton?
+    private weak var controlStrip: OverlayControlStrip?
 
     init(model: LibraryModel) {
         self.model = model
@@ -218,67 +218,58 @@ public final class VNPlayerRootViewController: UIViewController {
         (view.window as? PassthroughWindow)?.contentView = host.view
         hostingView = host.view
 
-        buildReturnButton()
+        buildControlStrip()
 
         model.presenter = self
     }
 
-    /// The way back to the library, as a real UIKit button rather than a SwiftUI one.
+    /// The always-visible control strip.
     ///
-    /// This is not a style preference, it is the only thing that works. `UIHostingController`'s
-    /// view does its own internal hit-testing and returns **itself** for every point --
-    /// a SwiftUI `Button` is not a separate `UIView`, it is a region the hosting view
-    /// handles internally. So `PassthroughWindow.hitTest` cannot tell "over the button"
-    /// from "over empty space" by view identity: both come back as the hosting view.
-    /// Rejecting the hosting view to let touches through therefore rejected the button
-    /// too, and it rendered perfectly while being completely inert.
-    ///
-    /// A UIKit button IS a distinct view, so `super.hitTest` returns the button over the
-    /// button and the hosting view everywhere else, and identity separates them cleanly.
-    ///
-    /// The generalisation for M3, which will have several controls: give each interactive
-    /// island its own small hosting controller, sized to the control, added as a sibling
-    /// above the full-screen backdrop. Then the same identity rule works -- the
-    /// full-screen hosting view is the backdrop and is rejected, while each island's
-    /// hosting view is a distinct view that is not.
-    private func buildReturnButton() {
-        let button = UIButton(type: .system)
-        button.setImage(
-            UIImage(systemName: "chevron.compact.left",
-                    withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold)),
-            for: .normal)
-        button.tintColor = UIColor.white.withAlphaComponent(0.75)
-        button.backgroundColor = UIColor.black.withAlphaComponent(0.35)
-        button.layer.cornerRadius = 10
-        button.layer.maskedCorners = [.layerMinXMinYCorner, .layerMinXMaxYCorner]
-        button.translatesAutoresizingMaskIntoConstraints = false
-        button.addTarget(self, action: #selector(returnToLibraryTapped), for: .touchUpInside)
-        button.isHidden = true
-
-        view.addSubview(button)
-        NSLayoutConstraint.activate([
-            // A tab docked to the right edge rather than a button floating in the
-            // corner: narrower, so it covers less of the game, and unmistakably an
-            // affordance rather than part of whatever is being played.
-            button.widthAnchor.constraint(equalToConstant: 26),
-            button.heightAnchor.constraint(equalToConstant: 64),
-            button.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            button.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+    /// UIKit rather than SwiftUI, and forced rather than chosen: the strip is on screen
+    /// permanently, so touches must pass through around it permanently, and
+    /// UIHostingController's view answers every hit test itself. See OverlayControlStrip.
+    private func buildControlStrip() {
+        let strip = OverlayControlStrip(items: [
+            .init(id: "rollback", symbol: "arrow.uturn.backward",
+                  accessibility: "Roll back") { [weak self] in self?.model.rollback() },
+            .init(id: "quickSave", symbol: "square.and.arrow.down",
+                  accessibility: "Quick save") { [weak self] in self?.model.quickSave() },
+            .init(id: "quickLoad", symbol: "square.and.arrow.up",
+                  accessibility: "Quick load") { [weak self] in self?.model.quickLoad() },
+            .init(id: "skip", symbol: "forward",
+                  accessibility: "Skip") { [weak self] in self?.model.toggleSkip() },
+            .init(id: "magnify", symbol: "plus.magnifyingglass",
+                  accessibility: "Magnify") { [weak self] in self?.model.enterMagnifier() },
+            .init(id: "library", symbol: "books.vertical",
+                  accessibility: "Back to library") { [weak self] in self?.model.returnToLibrary() },
         ])
 
-        returnButton = button
+        strip.isHidden = true
+        view.addSubview(strip)
+
+        NSLayoutConstraint.activate([
+            strip.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor,
+                                            constant: -8),
+            strip.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+        ])
+
+        controlStrip = strip
     }
 
-    @objc private func returnToLibraryTapped() {
-        // Opens the overlay now; quitting is one of the controls inside it. The handle
-        // used to quit directly, which meant a single mistap threw the reader out of
-        // their game with no confirmation.
-        model.openOverlay()
+    func setControlsVisible(_ visible: Bool) {
+        controlStrip?.isHidden = !visible
+        if visible { controlStrip?.wake() }
     }
 
-    /// Shown only while a game is running; the library has its own navigation.
-    func setHandleVisible(_ visible: Bool) {
-        returnButton?.isHidden = !visible
+    /// Push the engine's own account of what it will accept.
+    func updateControls(canRollback: Bool, canSave: Bool, isSkipping: Bool) {
+        controlStrip?.setEnabled(canRollback, for: "rollback")
+        controlStrip?.setEnabled(canSave, for: "quickSave")
+        controlStrip?.setSymbol(isSkipping ? "forward.fill" : "forward", for: "skip")
+    }
+
+    func showControlMessage(_ text: String) {
+        controlStrip?.showMessage(text, in: view)
     }
 
     /// Must agree with SDL's mask or iOS raises UIApplicationInvalidInterfaceOrientation

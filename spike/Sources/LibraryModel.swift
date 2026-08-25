@@ -30,14 +30,12 @@ final class LibraryModel: ObservableObject {
     @Published var memorySamples: [MemorySample] = []
     @Published var meanGrowthPerCycleMB: Double?
 
-    @Published var overlay: OverlayState = .closed
+    @Published var overlay: OverlayState = .playing
     @Published var engine = ProtocolMessages.EngineState()
     /// A sentence from the engine explaining why a control did nothing.
     @Published var overlayMessage: String?
     @Published var magnification: CGFloat = 1
     @Published var magnifyOffset: CGSize = .zero
-    /// Shown open on the first game of an install, so the gesture is discoverable at all.
-    @Published var showOverlayHint = false
 
     var lastControlCommandId: String?
     var memoryWarningShown = false
@@ -290,13 +288,19 @@ final class LibraryModel: ObservableObject {
                     // Every game starts with the overlay closed. On the very first game
                     // of an install it opens itself once, because an edge handle nobody
                     // mentions is a handle nobody finds.
-                    overlay = .closed
+                    overlay = .playing
+                    applyWindowState()
+
+                    // The strip is visible from the first frame, so it needs no summoning
+                    // and no tutorial. One sentence on the first game of an install is
+                    // still worth it, because a column of small icons over someone else's
+                    // artwork is not self-evidently ours.
                     if !UserDefaults.standard.bool(forKey: "vnplayer.overlayHintShown") {
                         UserDefaults.standard.set(true, forKey: "vnplayer.overlayHintShown")
-                        showOverlayHint = true
-                        overlay = .open
+                        coordinatorRef?.showControlMessage(
+                            "These controls are VNPlayer's, not the game's. "
+                            + "They fade out while you read.")
                     }
-                    applyWindowState()
                 }
 
             case "launchFailed":
@@ -430,9 +434,18 @@ enum ImportSupport {
 /// answering every touch is only a problem when we need some touches to escape, and while
 /// the overlay is open none of them should. A tap outside the strip dismisses it, and
 /// must NOT also advance the game's dialogue.
+/// Two states, not three.
+///
+/// The control strip is on screen the whole time a game runs -- there is no opening or
+/// closing it, so there is no "open". What remains is whether the magnifier has taken
+/// over, because that is the one state where the window must absorb every touch instead
+/// of passing them to the game.
 enum OverlayState: Equatable {
-    case closed
-    case open
+    /// Playing. Window passes touches through; the UIKit strip is the only live view.
+    case playing
+    /// Magnifier. Window ABSORBS everything, so a pan cannot reach SDL -- Ren'Py reads a
+    /// horizontal drag as rollback and would scroll the reader backwards through
+    /// dialogue they had not finished.
     case magnified
 }
 
@@ -445,19 +458,6 @@ extension LibraryModel {
 
     // MARK: Opening and closing
 
-    func openOverlay() {
-        guard isPlaying else { return }
-        overlay = .open
-        applyWindowState()
-    }
-
-    func closeOverlay() {
-        guard isPlaying else { return }
-        overlay = .closed
-        overlayMessage = nil
-        applyWindowState()
-    }
-
     func enterMagnifier() {
         guard isPlaying else { return }
         overlay = .magnified
@@ -468,7 +468,7 @@ extension LibraryModel {
         magnification = 1
         magnifyOffset = .zero
         coordinatorRef?.applyMagnification(scale: 1, offset: .zero)
-        overlay = .open
+        overlay = .playing
         applyWindowState()
     }
 
@@ -487,10 +487,17 @@ extension LibraryModel {
         let libraryVisible = !isPlaying
 
         coordinatorRef?.applyWindow(
-            passthrough: isPlaying && overlay == .closed,
-            showHandle: isPlaying && overlay == .closed,
+            passthrough: isPlaying && overlay == .playing,
+            showControls: isPlaying && overlay == .playing,
             makeKey: libraryVisible
         )
+
+        if isPlaying {
+            coordinatorRef?.updateControls(
+                canRollback: engine.canRollback,
+                canSave: engine.canSave,
+                isSkipping: engine.isSkipping)
+        }
     }
 
     // MARK: Controls
@@ -519,6 +526,10 @@ extension LibraryModel {
         case ProtocolMessages.EventName.engineState:
             if let state = ProtocolMessages.EngineState(payload: payload) {
                 engine = state
+                coordinatorRef?.updateControls(
+                    canRollback: state.canRollback,
+                    canSave: state.canSave,
+                    isSkipping: state.isSkipping)
             }
             return true
 
@@ -534,8 +545,10 @@ extension LibraryModel {
             guard commandId == lastControlCommandId else { return true }
             // Rendered as a sentence, because Python sends one. "there is nothing to roll
             // back to" is an answer to the reader's question, not an error report.
-            overlayMessage = payload[ProtocolMessages.Key.reason] as? String
+            let reason = payload[ProtocolMessages.Key.reason] as? String
                 ?? "That did not work."
+            overlayMessage = reason
+            coordinatorRef?.showControlMessage(reason)
             return true
 
         default:

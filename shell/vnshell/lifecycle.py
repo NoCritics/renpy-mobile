@@ -369,9 +369,10 @@ def _stop_audio() -> None:
     try:
         import renpy  # type: ignore
 
-        renpy.music.stop(channel="music", fadeout=0)
-        renpy.music.stop(channel="sound", fadeout=0)
-        renpy.music.stop(channel="voice", fadeout=0)
+        music = _api().music
+        music.stop(channel="music", fadeout=0)
+        music.stop(channel="sound", fadeout=0)
+        music.stop(channel="voice", fadeout=0)
     except Exception as e:  # noqa: BLE001 - never let cleanup abort the switch
         print(f"[vnshell] could not stop audio: {type(e).__name__}")
 
@@ -399,6 +400,34 @@ def _restart() -> None:
     import renpy.game  # type: ignore
 
     raise renpy.game.UtterRestartException()
+
+
+# Ren'Py API names we call, kept in one place so tests can check them against the SDK.
+RENPY_API_NAMES = ("save", "load", "rollback", "can_rollback", "restart_interaction")
+
+
+def _api():
+    """Ren'Py's public API module.
+
+    **This is `renpy.exports`, and it is NOT the `renpy` package.**
+
+    `renpy/defaultstore.py:481` does `globals()["renpy"] = renpy.exports`, so inside a
+    `.rpy` file the name `renpy` already IS `renpy.exports`. That is why every example in
+    Ren'Py's documentation writes `renpy.save(...)` and why the same line fails from a
+    plain Python module: `import renpy` gives the PACKAGE, which has `config`, `game` and
+    `loadsave` but none of `save`, `load`, `rollback`, `can_rollback`,
+    `restart_interaction` or `music`.
+
+    This cost a device round-trip. `config.skipping` assigned fine (real submodule) and
+    then `restart_interaction()` raised AttributeError; `_publish_engine_state` died on
+    `can_rollback()` so no engine-state event was ever emitted, and the overlay showed
+    Roll back and Quick save permanently greyed out. Two symptoms, one cause, and neither
+    pointed at it.
+    """
+
+    import renpy.exports  # type: ignore
+
+    return renpy.exports
 
 
 def _emit_done(command_id, **extra) -> None:
@@ -460,7 +489,7 @@ def _handle_quick_save(command: Command) -> None:
     # except Exception is safe HERE and only here: renpy.save does not use exceptions for
     # control flow. It is not safe around rollback, load or quit -- see _dispatch.
     try:
-        renpy.save(QUICK_SLOT, extra_info="Quick save")
+        _api().save(QUICK_SLOT, extra_info="Quick save")
     except Exception as exc:  # noqa: BLE001
         return _emit_failed(command_id, f"the save failed ({type(exc).__name__})")
 
@@ -472,6 +501,8 @@ def _handle_quick_load(command: Command) -> None:
 
     import renpy  # type: ignore
 
+    import renpy.loadsave  # type: ignore
+
     if not renpy.loadsave.can_load(QUICK_SLOT):
         return _emit_failed(command_id, "there is no quick save to load")
 
@@ -479,7 +510,7 @@ def _handle_quick_load(command: Command) -> None:
     # and while that derives from BaseException (so except Exception would not catch it),
     # relying on that subtlety in a handler is how the next person breaks it.
     _emit_done(command_id)
-    renpy.load(QUICK_SLOT)
+    _api().load(QUICK_SLOT)
 
 
 def _handle_rollback(command: Command) -> None:
@@ -487,14 +518,14 @@ def _handle_rollback(command: Command) -> None:
 
     import renpy  # type: ignore
 
-    if not renpy.can_rollback():
+    if not _api().can_rollback():
         # A real answer, not a failure: at the start of a game there is nothing behind you.
         return _emit_failed(command_id, "there is nothing to roll back to")
 
     _emit_done(command_id)
     # Raises RollbackException (a BaseException) to do the work. Same reasoning as load:
     # left unwrapped so the control flow is visible rather than implied.
-    renpy.rollback()
+    _api().rollback()
 
 
 def _handle_toggle_skip(command: Command) -> None:
@@ -509,7 +540,7 @@ def _handle_toggle_skip(command: Command) -> None:
         else:
             renpy.config.skipping = "slow"
             skipping = True
-        renpy.restart_interaction()
+        _api().restart_interaction()
     except Exception as exc:  # noqa: BLE001
         return _emit_failed(command_id, f"could not change skipping ({type(exc).__name__})")
 
@@ -537,7 +568,7 @@ def _publish_engine_state() -> None:
 
     try:
         state = {
-            "canRollback": bool(renpy.can_rollback()),
+            "canRollback": bool(_api().can_rollback()),
             "canSave": _save_blocked_reason() is None,
             "isSkipping": bool(renpy.config.skipping),
             "inGame": STATE.current_game_id is not None,
