@@ -127,15 +127,36 @@ final class LibraryModel: ObservableObject {
     // MARK: - Import
 
     func beginImport() {
+        // Re-presenting while the picker is already up is the documented way to get a
+        // SwiftUI fileImporter that silently never appears again: the binding is already
+        // true, so setting it true changes nothing, and the dismissal that follows leaves
+        // it false with no sheet. Reported from the device as "needs repeated attempts".
+        guard !showImporter else {
+            print("[vnspike] importer: already open, ignoring")
+            return
+        }
+
+        // Argument-free: on iOS only NSLog lines with no formatted value survive the USB
+        // relay intact, measured in Milestone B. These three lines are what distinguish
+        // "the picker never opened" from "it opened and the provider listed nothing",
+        // which are different bugs with different owners.
+        print("[vnspike] importer: opening")
         showImporter = true
     }
 
     func handlePicked(_ result: Result<[URL], Error>) {
         switch result {
         case .failure(let error):
+            print("[vnspike] importer: failed")
             errorMessage = error.localizedDescription
         case .success(let urls):
-            guard let url = urls.first else { return }
+            guard let url = urls.first else {
+                // The picker returned success with nothing in it. Not a state that should
+                // occur, and silence here would look exactly like a dead button.
+                print("[vnspike] importer: returned no file")
+                return
+            }
+            print("[vnspike] importer: picked a file")
             importArchive(at: url)
         }
     }

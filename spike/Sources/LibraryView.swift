@@ -17,7 +17,7 @@ struct LibraryView: View {
         .animation(.default, value: isHidden)
         .fileImporter(
             isPresented: $model.showImporter,
-            allowedContentTypes: [.zip],
+            allowedContentTypes: Self.importableTypes,
             allowsMultipleSelection: false
         ) { result in
             model.handlePicked(result)
@@ -38,6 +38,33 @@ struct LibraryView: View {
         if case .playing = model.phase { return true }
         return false
     }
+
+    /// What the picker will let the reader select.
+    ///
+    /// Wider than `.zip` alone, and deliberately. A document provider types a file
+    /// lazily; until it resolves one, the file is listed but greyed out and cannot be
+    /// tapped -- which is indistinguishable, to the person holding the phone, from the
+    /// file not being there. `public.zip-archive` is also not the only UTI a `.zip` can
+    /// carry: older exporters still declare `com.pkware.zip-archive`, and a provider that
+    /// knows nothing about a file falls back to `public.data`.
+    ///
+    /// Widening it costs nothing, because the picker is not what decides whether an
+    /// archive is usable. `ArchiveImporter` reads the file's actual central directory and
+    /// answers "That doesn't look like a .zip file." for anything that is not one. A
+    /// filter that hides the file the reader is looking for is the worse failure: it
+    /// offers no message at all.
+    static let importableTypes: [UTType] = {
+        var types: [UTType] = [.zip, .archive]
+        if let byExtension = UTType(filenameExtension: "zip") {
+            types.append(byExtension)
+        }
+        if let pkware = UTType("com.pkware.zip-archive") {
+            types.append(pkware)
+        }
+        // Distinct identifiers only; the picker treats a repeated type as a conflict.
+        var seen = Set<String>()
+        return types.filter { seen.insert($0.identifier).inserted }
+    }()
 
     private var errorBinding: Binding<Bool> {
         Binding(
