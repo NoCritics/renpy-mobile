@@ -206,31 +206,52 @@ final class LibraryModel: ObservableObject {
     // MARK: - Import
 
     func beginImport() {
-        // Re-presenting while the picker is already up is the documented way to get a
-        // SwiftUI fileImporter that silently never appears again: the binding is already
-        // true, so setting it true changes nothing, and the dismissal that follows leaves
-        // it false with no sheet. Reported from the device as "needs repeated attempts".
-        guard !showPicker else {
-            NSLog("[vnspike] importer: already open, ignoring")
-            return
-        }
-
         pickerPurpose = .game
+        presentPicker()
+    }
 
+    /// Raise the file picker, healing a stranded flag rather than dying on it.
+    ///
+    /// This used to be `guard !showPicker else { return }`. That guard was meant to stop
+    /// a double-tap re-presenting the sheet, and it did -- but it also meant that if
+    /// `showPicker` was ever left `true` with no sheet on screen, every later tap hit the
+    /// guard and returned, and the only way back was killing the app. Reported from the
+    /// device as exactly that: "requires app restart".
+    ///
+    /// SwiftUI resets the binding when it dismisses, but an interrupted dismissal does
+    /// not always get there, and a flag whose only writer is the framework is a flag we
+    /// cannot promise anything about. So: if it is already set, clear it and re-raise on
+    /// the next runloop pass, which gives SwiftUI the false->true transition it needs to
+    /// present. A stale flag now costs one frame instead of a restart.
+    private func presentPicker() {
         // Argument-free: on iOS only NSLog lines with no formatted value survive the USB
         // relay intact, measured in Milestone B. `print` does NOT reach the device log at
         // all for a sideloaded app -- it writes to stdout, which the device log never
-        // sees -- which is why this line and its siblings below use NSLog instead. These
-        // lines are what distinguish "the picker never opened" from "it opened and the
-        // provider listed nothing", which are different bugs with different owners.
-        NSLog("[vnspike] importer: opening")
-        showPicker = true
+        // sees. These lines are what distinguish "the picker never opened" from "it
+        // opened and the provider listed nothing", which are different bugs with
+        // different owners.
+        guard showPicker else {
+            NSLog("[vnspike] importer: opening")
+            showPicker = true
+            return
+        }
+
+        NSLog("[vnspike] importer: flag was stale, re-raising")
+        showPicker = false
+        DispatchQueue.main.async { [weak self] in
+            self?.showPicker = true
+        }
     }
 
     /// The single `.fileImporter`'s completion handler routes here, and dispatches on
     /// `pickerPurpose` to whichever picker actually opened it. See `pickerPurpose`'s
     /// comment for why that routing cannot ride on the presentation binding itself.
     func handlePickedFile(_ result: Result<[URL], Error>) {
+        // Belt and braces with `presentPicker`'s stale-flag recovery. The completion
+        // fires on every outcome including cancellation, so this is the one place the
+        // flag is guaranteed to be cleared by us rather than only by the framework.
+        showPicker = false
+
         switch pickerPurpose {
         case .game: handlePicked(result)
         case .saves: handlePickedSave(result)
@@ -698,11 +719,10 @@ extension LibraryModel {
     // MARK: Save import
 
     func beginSaveImport(into hint: LibraryEntry? = nil) {
-        guard !showPicker else { return }
         importHint = hint
         pickerPurpose = .saves
         NSLog("[vnspike] save import: opening")
-        showPicker = true
+        presentPicker()
     }
 
     func handlePickedSave(_ result: Result<[URL], Error>) {
