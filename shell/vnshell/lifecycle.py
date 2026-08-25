@@ -48,11 +48,27 @@ def install(renpy_base: str) -> None:
     # This also keeps bootstrap.py:334 happy: it calls path_to_gamedir(renpy_base, ...)
     # before the restart loop is ever entered, and our strict version needs game/ there.
     STATE.shell_project_dir = renpy_base
+
+    # On iOS data_root() redirects this out of the read-only bundle and into the app's
+    # Data container; off-iOS it returns renpy_base unchanged, preserving the desktop
+    # layout Milestone A verified. VNPLAYER_SAVES_ROOT still wins over both, because the
+    # cycling harness sets it explicitly.
+    from vnshell import platform
+
     STATE.saves_root = os.environ.get(
-        "VNPLAYER_SAVES_ROOT", os.path.join(renpy_base, "saves")
+        "VNPLAYER_SAVES_ROOT",
+        os.path.join(platform.data_root(renpy_base), "Saves"),
     )
 
     command_file = os.environ.get("VNPLAYER_COMMAND_FILE")
+    if not command_file and platform.is_ios():
+        # The overlay writes here; device-verified end to end on 2026-08-25, Swift ->
+        # FileTransport -> the engine's periodic callback. Nothing sets the environment
+        # variable on iOS because nothing on iOS has an environment to set it in: the
+        # process is launched by iOS, not by a shell.
+        command_file = os.path.join(
+            platform.data_root(renpy_base), "vnplayer-commands.jsonl"
+        )
     if command_file:
         mailbox_module.MAILBOX = Mailbox(FileTransport(command_file))
     else:

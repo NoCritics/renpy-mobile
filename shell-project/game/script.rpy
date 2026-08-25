@@ -38,6 +38,28 @@ init python:
         lines.append("basedir: " + str(renpy.config.basedir))
         lines.append("logdir: " + str(renpy.config.logdir))
 
+        # Virtual vs physical size, because the device shows this screen CROPPED: the
+        # top and bottom are cut off. Measured from the overlay screenshots, our own
+        # UIKit control sits correctly centred in a 1280x591 screen while Ren'Py's
+        # centred frame does not, which means Ren'Py's surface is taller than the
+        # visible area rather than the screenshot being trimmed.
+        #
+        # If that is Ren'Py filling to width and overflowing height rather than
+        # letterboxing, it costs every 16:9 game the top and bottom of its screen on a
+        # 19.5:9 phone -- which is exactly where dialogue boxes and menus live. These
+        # two numbers say which it is, and cost nothing to collect.
+        try:
+            vw = renpy.config.screen_width
+            vh = renpy.config.screen_height
+            pw, ph = renpy.get_physical_size()
+            lines.append("virtual: %dx%d (%.3f)" % (vw, vh, float(vw) / vh))
+            lines.append("physical: %dx%d (%.3f)" % (pw, ph, float(pw) / ph))
+            # If these disagree, the engine is not preserving the game's aspect ratio.
+            fits = abs((float(vw) / vh) - (float(pw) / ph)) < 0.01
+            lines.append("aspect preserved: %s" % ("YES" if fits else "NO"))
+        except Exception as e:
+            lines.append("size probe failed: %s" % type(e).__name__)
+
         # Whether Ren'Py can write log.txt at all. On iOS the bundle is read-only,
         # so this is expected to say NO until path_to_logdir points somewhere else.
         logdir = renpy.config.logdir
@@ -49,6 +71,22 @@ init python:
             lines.append("logdir writable: YES")
         except Exception as e:
             lines.append("logdir writable: NO (%s)" % type(e).__name__)
+
+        # The saves directory, which is the whole point of the path_to_saves change.
+        # Before it, the device denied this on every launch:
+        #   deny(1) file-write-create .../VNPlayer.app/base/game/saves
+        savedir = getattr(renpy.config, "savedir", None)
+        lines.append("savedir: " + str(savedir))
+        try:
+            if not savedir:
+                raise RuntimeError("config.savedir is unset")
+            probe = os.path.join(savedir, "vnplayer-save-probe.tmp")
+            with open(probe, "w") as f:
+                f.write("ok")
+            os.unlink(probe)
+            lines.append("savedir writable: YES")
+        except Exception as e:
+            lines.append("savedir writable: NO (%s)" % type(e).__name__)
 
         # Where a writable per-app directory would be, for comparison.
         try:
@@ -121,17 +159,21 @@ screen vnplayer_shell():
         vbox:
             spacing 10
 
-            text "VNPlayer shell is running" size 42
-            text "alive for [vnplayer_seconds]s" size 28
-
-            null height 10
-
-            for line in vnplayer_facts:
-                text "[line]" size 20
+            # Sizes reduced from 42/28/20: the list of facts has grown and the device
+            # crops the top and bottom of this screen (see the virtual/physical probe
+            # above). Smaller text is not a fix for the cropping -- it is so the facts
+            # that diagnose the cropping are themselves readable.
+            text "VNPlayer shell is running" size 30
+            text "alive for [vnplayer_seconds]s" size 22
 
             null height 6
-            text "from Swift: [vnspike_received] received" size 22
-            text "last: [vnspike_last]" size 18
+
+            for line in vnplayer_facts:
+                text "[line]" size 16
+
+            null height 4
+            text "from Swift: [vnspike_received] received" size 18
+            text "last: [vnspike_last]" size 14
 
 
 label start:
