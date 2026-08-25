@@ -29,7 +29,7 @@ let package = Package(
         .target(name: "VNPlayerCore", dependencies: ["ZIPFoundation"]),
         .testTarget(
             name: "VNPlayerCoreTests",
-            dependencies: ["VNPlayerCore"],
+            dependencies: ["VNPlayerCore", "ZIPFoundation"],
             resources: [.copy("Fixtures")]
         ),
     ]
