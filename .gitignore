@@ -22,3 +22,8 @@ errors.txt
 # explicitly re-track the one screenshot already committed as evidence in IOS-BUILD.md.
 logs/*
 !logs/photo_2026-08-24_21-26-45.jpg
+
+# Scratch spool from the desktop harness. One of these was committed by accident and
+# held the OLD flat wire shape, which is the exact bug tests/test_protocol.py exists to
+# prevent -- a stray fixture that contradicts the protocol is worse than no fixture.
+.tmp-spool/
