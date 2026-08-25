@@ -24,6 +24,16 @@ final class LibraryModel: ObservableObject {
     /// wants the whole distribution should be able to say so.
     @Published var pruneDesktopFiles = true
 
+    /// On-device memory readings, shown in the library because the device log cannot
+    /// carry them: only argument-free NSLog lines survive the USB relay, so a number
+    /// can never be printed. The screen is the only channel a measurement fits through.
+    @Published var memorySamples: [MemorySample] = []
+    @Published var meanGrowthPerCycleMB: Double?
+
+    private let memory = MemoryLog()
+    private var libraryVisits = 0
+    private var gameStarts = 0
+
     weak var presenter: UIViewController?
     private weak var coordinator: VNPlayerCoordinator?
 
@@ -68,6 +78,8 @@ final class LibraryModel: ObservableObject {
         } catch {
             errorMessage = "Could not set up storage: \(error.localizedDescription)"
         }
+
+        recordLibrarySample()
 
         startPolling()
         coordinator?.setLibraryVisible(true)
@@ -257,6 +269,9 @@ final class LibraryModel: ObservableObject {
                     try? paths.map { try? FileManager.default.removeItem(at: $0.launchSentinel) }
                     phase = .playing(gameId: gameId)
                     coordinator?.setLibraryVisible(false)
+                    gameStarts += 1
+                    memory.record("game \(gameStarts)")
+                    memorySamples = memory.samples
                 }
 
             case "launchFailed":
@@ -269,6 +284,10 @@ final class LibraryModel: ObservableObject {
 
             case "shellReady":
                 clearSentinel()
+                // Recorded unconditionally, not only when returning from a game. This is
+                // the post-restart state, which is the one the leak question is about:
+                // whatever the engine failed to release survives into it.
+                recordLibrarySample()
                 if case .playing = phase {
                     phase = .idle
                     coordinator?.setLibraryVisible(true)
@@ -280,6 +299,18 @@ final class LibraryModel: ObservableObject {
         }
 
         checkLaunchTimeout()
+    }
+
+    /// Sampling on entering the library, which is the state to compare like-for-like.
+    ///
+    /// Comparing a game sample against a library sample would measure the game's assets
+    /// rather than what the switch failed to release, and the whole question is whether
+    /// returning to the library returns to where it started.
+    private func recordLibrarySample() {
+        libraryVisits += 1
+        memory.record("library \(libraryVisits)")
+        memorySamples = memory.samples
+        meanGrowthPerCycleMB = memory.meanGrowthPerCycle(labelPrefix: "library")
     }
 
     private func clearSentinel() {

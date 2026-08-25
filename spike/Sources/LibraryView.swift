@@ -74,6 +74,10 @@ struct LibraryView: View {
             default:
                 if model.entries.isEmpty { emptyState } else { grid }
             }
+
+            if !model.memorySamples.isEmpty {
+                memoryPanel
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(white: 0.07).ignoresSafeArea())
@@ -143,6 +147,61 @@ struct LibraryView: View {
                 .padding(.horizontal, 40)
             Spacer()
         }
+    }
+
+    /// On-device memory readings.
+    ///
+    /// Here rather than in the log because the log physically cannot carry it: only
+    /// argument-free NSLog lines survive the USB relay, so no number can ever be
+    /// printed. This panel is the measurement channel.
+    ///
+    /// `phys_footprint` specifically, because that is the number Jetsam kills on --
+    /// resident size is a different figure and an app can look comfortable by it and
+    /// still be killed. "free" is `os_proc_available_memory`, the distance to being
+    /// killed rather than the distance from zero.
+    private var memoryPanel: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("Memory")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.55))
+
+                Spacer()
+
+                if let mean = model.meanGrowthPerCycleMB {
+                    Text(String(format: "%+.1f MB per library visit", mean))
+                        .font(.system(size: 12, weight: .semibold).monospacedDigit())
+                        .foregroundColor(mean > 5 ? .orange : .green)
+                } else {
+                    // Said out loud rather than shown as a zero. One sample cannot
+                    // describe growth, and a "0.0" here would read as "no leak".
+                    Text("open a game and come back to measure growth")
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.4))
+                }
+            }
+
+            ForEach(model.memorySamples.suffix(8)) { sample in
+                HStack(spacing: 10) {
+                    Text(sample.label)
+                        .font(.system(size: 11).monospacedDigit())
+                        .foregroundColor(.white.opacity(0.5))
+                        .frame(width: 74, alignment: .leading)
+                    Text(String(format: "%.0f MB", sample.footprintMB))
+                        .font(.system(size: 11).monospacedDigit())
+                        .foregroundColor(.white.opacity(0.75))
+                        .frame(width: 70, alignment: .trailing)
+                    Text(sample.availableBytes > 0
+                         ? String(format: "%.0f MB free", sample.availableMB)
+                         : "free unknown")
+                        .font(.system(size: 11).monospacedDigit())
+                        .foregroundColor(.white.opacity(0.4))
+                    Spacer()
+                }
+            }
+        }
+        .padding(.horizontal, 28)
+        .padding(.bottom, 14)
     }
 
     private var grid: some View {
