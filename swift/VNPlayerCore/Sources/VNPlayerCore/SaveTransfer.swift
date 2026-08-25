@@ -79,12 +79,21 @@ public struct SaveManifest: Codable, Equatable {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
 
-        guard let manifest = try? decoder.decode(SaveManifest.self, from: data) else {
-            throw SaveTransferError.notASaveArchive
+        // The format number is read BEFORE the manifest it describes, and the ordering is
+        // the whole point. Decoding first would mean a future format that actually changed
+        // the layout -- the only kind of change this number is incremented for -- fails to
+        // decode and gets reported as "that isn't a save file", when the true answer is
+        // "update the app". `format` is the one field every future version must still
+        // carry, so it is safe to read from a minimal shape.
+        struct FormatProbe: Decodable { let format: Int }
+
+        if let probe = try? decoder.decode(FormatProbe.self, from: data),
+           probe.format > currentFormat {
+            throw SaveTransferError.formatTooNew(probe.format)
         }
 
-        guard manifest.format <= currentFormat else {
-            throw SaveTransferError.formatTooNew(manifest.format)
+        guard let manifest = try? decoder.decode(SaveManifest.self, from: data) else {
+            throw SaveTransferError.notASaveArchive
         }
 
         return manifest
