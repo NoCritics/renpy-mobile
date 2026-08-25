@@ -101,14 +101,16 @@ final class ProtocolMessagesTests: XCTestCase {
         XCTAssertNil(ProtocolMessages.EngineState(payload: [:]))
     }
 
-    func testEngineStateDefaultsToEverythingDisabled() {
+    func testEngineStateDefaultsToEverythingDisabled() throws {
         // A malformed or partial state must not enable controls. Greying out a control
         // that would have worked is a small annoyance; offering one that cannot work is
         // the failure this event exists to prevent.
-        let state = try? XCTUnwrap(
+        let state = try XCTUnwrap(
             ProtocolMessages.EngineState(payload: ["event": "engineState"]))
-        XCTAssertEqual(state??.canRollback, false)
-        XCTAssertEqual(state??.canSave, false)
+        XCTAssertFalse(state.canRollback)
+        XCTAssertFalse(state.canSave)
+        XCTAssertFalse(state.isSkipping)
+        XCTAssertFalse(state.inGame)
     }
 
     func testEventParsing() {
