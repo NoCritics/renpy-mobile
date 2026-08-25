@@ -496,7 +496,8 @@ extension LibraryModel {
             coordinatorRef?.updateControls(
                 canRollback: engine.canRollback,
                 canSave: engine.canSave,
-                isSkipping: engine.isSkipping)
+                isSkipping: engine.isSkipping,
+                inMenu: engine.inMenu)
         }
     }
 
@@ -507,14 +508,27 @@ extension LibraryModel {
     func rollback() { sendControl(ProtocolMessages.CommandName.rollback) }
     func toggleSkip() { sendControl(ProtocolMessages.CommandName.toggleSkip) }
 
+    /// Open the game's own Save, Load or Preferences page.
+    func showMenu(_ screen: ProtocolMessages.MenuScreen) {
+        send { ProtocolMessages.showMenu(commandId: $0, screen: screen) }
+    }
+
     private func sendControl(_ name: String) {
+        send { ProtocolMessages.control(name, commandId: $0) }
+    }
+
+    /// One write path for every control. The builder is handed the commandId rather than
+    /// the payload being assembled here, because the one time a command payload was built
+    /// at the call site it drifted from what Python reads and the button silently did
+    /// nothing for sixty seconds.
+    private func send(_ build: (String) -> [String: Any]) {
         guard let commands else { return }
 
         let commandId = UUID().uuidString
         lastControlCommandId = commandId
 
         do {
-            try commands.write(ProtocolMessages.control(name, commandId: commandId))
+            try commands.write(build(commandId))
         } catch {
             overlayMessage = "That could not be sent to the game."
         }
@@ -529,7 +543,8 @@ extension LibraryModel {
                 coordinatorRef?.updateControls(
                     canRollback: state.canRollback,
                     canSave: state.canSave,
-                    isSkipping: state.isSkipping)
+                    isSkipping: state.isSkipping,
+                    inMenu: state.inMenu)
             }
             return true
 

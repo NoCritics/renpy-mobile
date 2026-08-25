@@ -180,5 +180,197 @@ class SaveGuardTests(unittest.TestCase):
             self.assertGreater(len(reason.split()), 3, reason)
 
 
+class RecordingEmitter:
+    def __init__(self):
+        self.events = []
+        self.directory = ""
+
+    def emit(self, payload):
+        self.events.append(payload)
+        return True
+
+
+class FakeAPI:
+    """Just enough of renpy.exports to exercise the showMenu routing.
+
+    A mock proves routing, and nothing more. It CANNOT prove these names exist -- the
+    handlers' first version had passing tests around a fake built to match the same wrong
+    assumption the code made. `tests/test_renpy_api.py` is what covers that, by checking
+    every name in `RENPY_API_NAMES` against the real SDK's export list.
+    """
+
+    def __init__(self, *, screens=(), labels=(), in_menu=False):
+        self.screens = set(screens)
+        self.labels = set(labels)
+        self._context = types.SimpleNamespace(_menu=in_menu)
+        self.calls = []
+
+    def has_screen(self, name):
+        return name in self.screens
+
+    def has_label(self, name):
+        return name in self.labels
+
+    def context(self):
+        return self._context
+
+    def game_menu(self, screen=None):
+        self.calls.append(("game_menu", screen))
+
+    def show_screen(self, name, **kwargs):
+        self.calls.append(("show_screen", name, kwargs))
+
+    def restart_interaction(self):
+        self.calls.append(("restart_interaction",))
+
+
+class ShowMenuTests(unittest.TestCase):
+    """Opening the game's OWN Save, Load and Preferences pages."""
+
+    def setUp(self):
+        self._real_renpy = sys.modules.get("renpy")
+        self._real_api = lifecycle._api
+        self._real_events = lifecycle._EVENTS
+        self.events = RecordingEmitter()
+        lifecycle._EVENTS = self.events
+        sys.modules["renpy"] = fake_renpy()
+
+    def tearDown(self):
+        lifecycle._api = self._real_api
+        lifecycle._EVENTS = self._real_events
+        if self._real_renpy is None:
+            sys.modules.pop("renpy", None)
+        else:
+            sys.modules["renpy"] = self._real_renpy
+
+    def run_command(self, api, screen, command_id="c1"):
+        lifecycle._api = lambda: api
+        lifecycle._handle_show_menu(
+            Command(name="showMenu", args={"commandId": command_id, "screen": screen}))
+        return self.events.events
+
+    def failures(self):
+        return [e for e in self.events.events if e["event"] == "commandFailed"]
+
+    def test_from_play_it_enters_a_new_context(self):
+        api = FakeAPI(screens={"preferences"}, in_menu=False)
+        self.run_command(api, "preferences")
+
+        self.assertEqual(api.calls, [("game_menu", "preferences")])
+        self.assertEqual(self.failures(), [])
+
+    def test_inside_the_menu_it_switches_pages_instead_of_nesting(self):
+        # The distinction that matters: a second game_menu() from inside the menu stacks
+        # a second context, and the reader needs two dismissals to get back to the game.
+        api = FakeAPI(screens={"save", "load"}, in_menu=True)
+        self.run_command(api, "load")
+
+        self.assertEqual(
+            api.calls,
+            [("show_screen", "load", {"_transient": True}), ("restart_interaction",)])
+        self.assertNotIn("game_menu", [c[0] for c in api.calls])
+
+    def test_a_label_page_falls_back_to_the_screen_suffix(self):
+        # Ren'Py's own rule: if neither a screen nor a label matches, try "<name>_screen".
+        api = FakeAPI(labels={"preferences_screen"}, in_menu=False)
+        self.run_command(api, "preferences")
+
+        self.assertEqual(api.calls, [("game_menu", "preferences_screen")])
+
+    def test_a_missing_page_is_refused_in_words(self):
+        api = FakeAPI(in_menu=False)
+        self.run_command(api, "load")
+
+        failures = self.failures()
+        self.assertEqual(len(failures), 1)
+        self.assertIn("load", failures[0]["reason"])
+        self.assertEqual(api.calls, [])
+
+    def test_an_unknown_screen_name_is_refused(self):
+        api = FakeAPI(screens={"save", "load", "preferences"})
+        self.run_command(api, "history")
+
+        self.assertEqual(len(self.failures()), 1)
+        self.assertEqual(api.calls, [])
+
+    def test_save_obeys_the_same_guard_as_quick_save(self):
+        sys.modules["renpy"] = fake_renpy(main_menu=True)
+        api = FakeAPI(screens={"save"}, in_menu=True)
+        self.run_command(api, "save")
+
+        failures = self.failures()
+        self.assertEqual(len(failures), 1)
+        self.assertIn("main menu", failures[0]["reason"])
+        self.assertEqual(api.calls, [])
+
+    def test_load_and_preferences_still_work_at_the_main_menu(self):
+        # They are legitimate there -- Ren'Py's own main menu offers both. Only save is
+        # refused, so the guard must not be applied to all three.
+        sys.modules["renpy"] = fake_renpy(main_menu=True)
+        api = FakeAPI(screens={"load", "preferences"}, in_menu=True)
+        self.run_command(api, "load")
+
+        self.assertEqual(self.failures(), [])
+        self.assertEqual(api.calls[0][0], "show_screen")
+
+    def test_a_label_page_inside_the_menu_says_so_rather_than_doing_nothing(self):
+        api = FakeAPI(labels={"save"}, in_menu=True)
+        self.run_command(api, "save")
+
+        failures = self.failures()
+        self.assertEqual(len(failures), 1)
+        self.assertIn("its own menu", failures[0]["reason"])
+        self.assertEqual(api.calls, [])
+
+    def test_every_refusal_is_a_sentence(self):
+        for api, screen in ((FakeAPI(), "load"), (FakeAPI(), "history")):
+            self.events.events = []
+            self.run_command(api, screen)
+            reason = self.failures()[0]["reason"]
+            self.assertGreater(len(reason.split()), 3, reason)
+
+
+class EngineStateTests(unittest.TestCase):
+    def setUp(self):
+        self._real_renpy = sys.modules.get("renpy")
+        self._real_api = lifecycle._api
+        self._real_events = lifecycle._EVENTS
+        self.events = RecordingEmitter()
+        self.events.directory = "somewhere"
+        lifecycle._EVENTS = self.events
+        lifecycle._last_state = None
+
+    def tearDown(self):
+        lifecycle._api = self._real_api
+        lifecycle._EVENTS = self._real_events
+        lifecycle._last_state = None
+        if self._real_renpy is None:
+            sys.modules.pop("renpy", None)
+        else:
+            sys.modules["renpy"] = self._real_renpy
+
+    def test_in_menu_is_published(self):
+        sys.modules["renpy"] = fake_renpy()
+        api = FakeAPI(in_menu=True)
+        api.can_rollback = lambda: True
+        lifecycle._api = lambda: api
+
+        lifecycle._publish_engine_state()
+
+        self.assertEqual(len(self.events.events), 1)
+        self.assertTrue(self.events.events[0]["inMenu"])
+
+    def test_unchanged_state_is_not_republished(self):
+        sys.modules["renpy"] = fake_renpy()
+        api = FakeAPI(in_menu=False)
+        api.can_rollback = lambda: False
+        lifecycle._api = lambda: api
+
+        lifecycle._publish_engine_state()
+        lifecycle._publish_engine_state()
+
+        self.assertEqual(len(self.events.events), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

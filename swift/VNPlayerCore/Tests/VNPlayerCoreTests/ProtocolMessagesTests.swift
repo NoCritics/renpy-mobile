@@ -79,6 +79,37 @@ final class ProtocolMessagesTests: XCTestCase {
         XCTAssertEqual(ProtocolMessages.CommandName.rollback, "rollback")
         XCTAssertEqual(ProtocolMessages.CommandName.toggleSkip, "toggleSkip")
         XCTAssertEqual(ProtocolMessages.CommandName.quitToLibrary, "quitToLibrary")
+        XCTAssertEqual(ProtocolMessages.CommandName.showMenu, "showMenu")
+    }
+
+    func testShowMenuShape() throws {
+        let message = ProtocolMessages.showMenu(commandId: "m1", screen: .preferences)
+
+        XCTAssertNil(message["command"])
+        XCTAssertEqual(message["name"] as? String, "showMenu")
+
+        let args = try XCTUnwrap(message["args"] as? [String: Any])
+        XCTAssertEqual(args["commandId"] as? String, "m1")
+        XCTAssertEqual(args["screen"] as? String, "preferences")
+    }
+
+    func testShowMenuScreenNamesMatchWhatPythonAccepts() {
+        // lifecycle.MENU_SCREENS is the other end of this. The names are Ren'Py's own
+        // screen names, so neither side is free to rename them.
+        XCTAssertEqual(
+            ProtocolMessages.MenuScreen.allCases.map(\.rawValue),
+            ["save", "load", "preferences"])
+    }
+
+    func testShowMenuSurvivesJSONSerialisation() throws {
+        for screen in ProtocolMessages.MenuScreen.allCases {
+            let data = try JSONSerialization.data(
+                withJSONObject: ProtocolMessages.showMenu(commandId: "m", screen: screen))
+            let round = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: data) as? [String: Any])
+            let args = try XCTUnwrap(round["args"] as? [String: Any])
+            XCTAssertEqual(args["screen"] as? String, screen.rawValue)
+        }
     }
 
     func testEngineStateParsesFromItsEvent() throws {
@@ -88,12 +119,14 @@ final class ProtocolMessagesTests: XCTestCase {
             "canSave": false,
             "isSkipping": true,
             "inGame": true,
+            "inMenu": true,
         ]))
 
         XCTAssertTrue(state.canRollback)
         XCTAssertFalse(state.canSave)
         XCTAssertTrue(state.isSkipping)
         XCTAssertTrue(state.inGame)
+        XCTAssertTrue(state.inMenu)
     }
 
     func testEngineStateRejectsOtherEvents() {
@@ -111,6 +144,7 @@ final class ProtocolMessagesTests: XCTestCase {
         XCTAssertFalse(state.canSave)
         XCTAssertFalse(state.isSkipping)
         XCTAssertFalse(state.inGame)
+        XCTAssertFalse(state.inMenu)
     }
 
     func testEventParsing() {

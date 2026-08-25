@@ -103,9 +103,10 @@ public final class VNPlayerCoordinator {
         window?.rootViewController as? VNPlayerRootViewController
     }
 
-    func updateControls(canRollback: Bool, canSave: Bool, isSkipping: Bool) {
+    func updateControls(canRollback: Bool, canSave: Bool, isSkipping: Bool, inMenu: Bool) {
         rootController?.updateControls(
-            canRollback: canRollback, canSave: canSave, isSkipping: isSkipping)
+            canRollback: canRollback, canSave: canSave, isSkipping: isSkipping,
+            inMenu: inMenu)
     }
 
     func showControlMessage(_ text: String) {
@@ -254,8 +255,18 @@ public final class VNPlayerRootViewController: UIViewController {
                   accessibility: "Quick load") { [weak self] in self?.model.quickLoad() },
             .init(id: "skip", symbol: "forward",
                   accessibility: "Skip") { [weak self] in self?.model.toggleSkip() },
-            .init(id: "magnify", symbol: "plus.magnifyingglass",
-                  accessibility: "Magnify") { [weak self] in self?.model.enterMagnifier() },
+            // The game's OWN pages, not ours: every slot with its thumbnails, and the
+            // game's real settings. Quick save above writes one reserved slot and shows
+            // nothing; these are the only route to the rest on a phone, where there is no
+            // Escape key and a game's own quick-menu is often too small to hit.
+            .init(id: "menuSave", symbol: "tray.and.arrow.down", accessibility: "Save",
+                  startsGroup: true) { [weak self] in self?.model.showMenu(.save) },
+            .init(id: "menuLoad", symbol: "tray.and.arrow.up",
+                  accessibility: "Load") { [weak self] in self?.model.showMenu(.load) },
+            .init(id: "menuPreferences", symbol: "slider.horizontal.3",
+                  accessibility: "Settings") { [weak self] in self?.model.showMenu(.preferences) },
+            .init(id: "magnify", symbol: "plus.magnifyingglass", accessibility: "Magnify",
+                  startsGroup: true) { [weak self] in self?.model.enterMagnifier() },
             .init(id: "library", symbol: "books.vertical",
                   accessibility: "Back to library") { [weak self] in self?.model.returnToLibrary() },
         ])
@@ -278,9 +289,15 @@ public final class VNPlayerRootViewController: UIViewController {
     }
 
     /// Push the engine's own account of what it will accept.
-    func updateControls(canRollback: Bool, canSave: Bool, isSkipping: Bool) {
-        controlStrip?.setEnabled(canRollback, for: "rollback")
+    ///
+    /// `inMenu` covers the game's own menu and its main menu alike. Rolling back or
+    /// skipping from a menu page means nothing, and quick save is already refused there
+    /// by `canSave`; leaving all three lit would offer the reader controls the engine has
+    /// already decided to turn down.
+    func updateControls(canRollback: Bool, canSave: Bool, isSkipping: Bool, inMenu: Bool) {
+        controlStrip?.setEnabled(canRollback && !inMenu, for: "rollback")
         controlStrip?.setEnabled(canSave, for: "quickSave")
+        controlStrip?.setEnabled(!inMenu, for: "skip")
         controlStrip?.setSymbol(isSkipping ? "forward.fill" : "forward", for: "skip")
     }
 

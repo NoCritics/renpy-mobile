@@ -21,7 +21,24 @@ final class OverlayControlStrip: UIView {
         let id: String
         let symbol: String
         let accessibility: String
+        /// Draw a hairline above this icon. Nine icons in one unbroken column read as a
+        /// list to scan through; grouped, they read as a thing to use. The three groups
+        /// are reading (roll back, quick save, quick load, skip), the game's own pages
+        /// (save, load, settings), and leaving this screen (magnify, library).
+        let startsGroup: Bool
         let action: () -> Void
+
+        init(id: String,
+             symbol: String,
+             accessibility: String,
+             startsGroup: Bool = false,
+             action: @escaping () -> Void) {
+            self.id = id
+            self.symbol = symbol
+            self.accessibility = accessibility
+            self.startsGroup = startsGroup
+            self.action = action
+        }
     }
 
     private let stack = UIStackView()
@@ -61,6 +78,10 @@ final class OverlayControlStrip: UIView {
         addSubview(stack)
 
         for item in items {
+            if item.startsGroup, !stack.arrangedSubviews.isEmpty {
+                stack.addArrangedSubview(makeDivider())
+            }
+
             let button = UIButton(type: .system)
             button.setImage(
                 UIImage(systemName: item.symbol,
@@ -96,6 +117,31 @@ final class OverlayControlStrip: UIView {
         ])
 
         sendSubviewToBack(backdrop)
+    }
+
+    /// A hairline between groups. Not a UIStackView separator -- there is no such thing --
+    /// so it is a plain view with a height constraint, made non-interactive because a
+    /// passthrough window must never hand a touch to decoration.
+    private func makeDivider() -> UIView {
+        let holder = UIView()
+        holder.isUserInteractionEnabled = false
+        holder.translatesAutoresizingMaskIntoConstraints = false
+
+        let line = UIView()
+        line.backgroundColor = UIColor.white.withAlphaComponent(0.22)
+        line.translatesAutoresizingMaskIntoConstraints = false
+        holder.addSubview(line)
+
+        NSLayoutConstraint.activate([
+            holder.heightAnchor.constraint(equalToConstant: 9),
+            holder.widthAnchor.constraint(equalToConstant: 40),
+            line.centerYAnchor.constraint(equalTo: holder.centerYAnchor),
+            line.centerXAnchor.constraint(equalTo: holder.centerXAnchor),
+            line.widthAnchor.constraint(equalToConstant: 22),
+            line.heightAnchor.constraint(equalToConstant: 1),
+        ])
+
+        return holder
     }
 
     @objc private func tapped(_ sender: UIButton) {

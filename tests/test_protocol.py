@@ -88,6 +88,22 @@ class LaunchCommandShapeTests(unittest.TestCase):
         )
         self.assertIn("name", mailbox._last_report)
 
+    def test_show_menu_shape_and_screen_names(self):
+        payload = load("show-menu-command.json")
+        commands = Mailbox(StubTransport([payload])).poll()
+
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(commands[0].name, "showMenu")
+        self.assertEqual(commands[0].args["screen"], "preferences")
+
+        from vnshell import lifecycle
+
+        self.assertIn("showMenu", lifecycle._HANDLERS)
+        # The screen name in the fixture must be one Python will actually accept. Swift
+        # spells these as an enum; this is the seam where the two spellings meet.
+        self.assertIn(commands[0].args["screen"], lifecycle.MENU_SCREENS)
+        self.assertEqual(lifecycle.MENU_SCREENS, ("save", "load", "preferences"))
+
     def test_quit_to_library_shape(self):
         payload = load("quit-command.json")
         commands = Mailbox(StubTransport([payload])).poll()

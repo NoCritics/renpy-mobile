@@ -22,6 +22,7 @@ public enum ProtocolMessages {
         public static let commandId = "commandId"
         public static let gameId = "gameId"
         public static let basedir = "basedir"
+        public static let screen = "screen"
         public static let event = "event"
         public static let reason = "reason"
     }
@@ -33,6 +34,15 @@ public enum ProtocolMessages {
         public static let quickLoad = "quickLoad"
         public static let rollback = "rollback"
         public static let toggleSkip = "toggleSkip"
+        public static let showMenu = "showMenu"
+    }
+
+    /// The game's own menu pages, by the names Ren'Py knows them under. Python validates
+    /// this same set; the fixture in tests/protocol keeps the two honest.
+    public enum MenuScreen: String, CaseIterable {
+        case save
+        case load
+        case preferences
     }
 
     public enum EventName {
@@ -52,6 +62,8 @@ public enum ProtocolMessages {
         public var canSave = false
         public var isSkipping = false
         public var inGame = false
+        /// True while the game's own menu -- or its main menu -- is up.
+        public var inMenu = false
 
         public init() {}
 
@@ -61,6 +73,7 @@ public enum ProtocolMessages {
             canSave = payload["canSave"] as? Bool ?? false
             isSkipping = payload["isSkipping"] as? Bool ?? false
             inGame = payload["inGame"] as? Bool ?? false
+            inMenu = payload["inMenu"] as? Bool ?? false
         }
     }
 
@@ -80,6 +93,21 @@ public enum ProtocolMessages {
                 Key.commandId: commandId,
                 Key.gameId: gameId,
                 Key.basedir: basedir,
+            ],
+        ]
+    }
+
+    /// Open one of the game's own menu pages.
+    ///
+    /// Takes the enum rather than a String on purpose: the page name is the one argument
+    /// in this protocol that Python validates against a fixed set, so an unrepresentable
+    /// value should not be constructible on this side either.
+    public static func showMenu(commandId: String, screen: MenuScreen) -> [String: Any] {
+        [
+            Key.name: CommandName.showMenu,
+            Key.args: [
+                Key.commandId: commandId,
+                Key.screen: screen.rawValue,
             ],
         ]
     }

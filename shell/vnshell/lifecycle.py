@@ -403,7 +403,18 @@ def _restart() -> None:
 
 
 # Ren'Py API names we call, kept in one place so tests can check them against the SDK.
-RENPY_API_NAMES = ("save", "load", "rollback", "can_rollback", "restart_interaction")
+RENPY_API_NAMES = (
+    "save",
+    "load",
+    "rollback",
+    "can_rollback",
+    "restart_interaction",
+    "game_menu",
+    "has_screen",
+    "has_label",
+    "show_screen",
+    "context",
+)
 
 
 def _api():
@@ -513,6 +524,85 @@ def _handle_quick_load(command: Command) -> None:
     _api().load(QUICK_SLOT)
 
 
+# The game's own menu pages, by the names Ren'Py gives them. Not an invented set: these
+# are the three screens ShowMenu is documented with (common/00action_menu.rpy:57).
+MENU_SCREENS = ("save", "load", "preferences")
+
+
+def _handle_show_menu(command: Command) -> None:
+    """Open one of the game's OWN menu pages -- Save, Load or Preferences.
+
+    Distinct from quick save, which writes one reserved slot and never shows a screen.
+    These hand the reader the game's real pages: every slot, its thumbnails, its own
+    settings. On a phone there is otherwise no route to them at all -- desktop reaches
+    them with Escape or right-click, and a game's own quick-menu is frequently drawn too
+    small to hit or hidden outright.
+
+    The implementation mirrors ShowMenu.__call__ (common/00action_menu.rpy:83) instead of
+    inventing a route, and that includes its two branches, which are not interchangeable:
+
+      * From play, entering the game menu means a NEW CONTEXT (`game_menu`), which runs
+        the menu's own interaction loop inside this call and returns when the reader
+        dismisses it.
+      * Once already inside the menu -- and the main menu counts, `_menu` is True there
+        too (00gamemenu.rpy:90, 00start.rpy:105) -- switching pages is a transient screen
+        show. Calling `game_menu` again from there would stack a second context on the
+        first, and the reader would need two dismissals to get back to the game.
+
+    Blocking is safe. The nested context pumps PERIODIC like any other, so `tick()` keeps
+    running inside it and the strip stays live; and `call_in_new_context` pops its context
+    in a `finally` (renpy/game.py), so a `quitToLibrary` raised from within the menu
+    unwinds cleanly rather than leaving the stack dirty.
+    """
+
+    command_id = command.args.get("commandId")
+    screen = command.args.get("screen")
+
+    if screen not in MENU_SCREENS:
+        return _emit_failed(command_id, f"this build cannot open a {screen!r} page")
+
+    # Save is the only one of the three the engine ever refuses -- Load and Preferences
+    # are legitimate at the main menu. Reuses the same four conditions Ren'Py's own save
+    # button reads, rather than a second opinion about them.
+    if screen == "save":
+        reason = _save_blocked_reason()
+        if reason:
+            return _emit_failed(command_id, reason)
+
+    api = _api()
+
+    # A game may define a page as a label rather than a screen; Ren'Py appends "_screen"
+    # for exactly that case, and so does this.
+    target = screen
+    if not (api.has_screen(target) or api.has_label(target)):
+        target = screen + "_screen"
+
+    if not (api.has_screen(target) or api.has_label(target)):
+        return _emit_failed(command_id, f"this game has no {screen} page")
+
+    in_menu = bool(getattr(api.context(), "_menu", False))
+
+    if in_menu and not api.has_screen(target):
+        # Inside the menu, page switching is a screen show. A game that defines this page
+        # as a LABEL needs a jump within the menu context, which ShowMenu performs with
+        # ui.layer/remove_above and which is not worth half-reproducing from here. Say so
+        # rather than returning quietly -- a control that does nothing and says nothing is
+        # the failure this whole event channel exists to avoid.
+        return _emit_failed(
+            command_id,
+            f"this game's {screen} page can only be opened from its own menu",
+        )
+
+    _emit_done(command_id)
+
+    if in_menu:
+        api.show_screen(target, _transient=True)
+        api.restart_interaction()
+        return
+
+    api.game_menu(target)
+
+
 def _handle_rollback(command: Command) -> None:
     command_id = command.args.get("commandId")
 
@@ -572,6 +662,9 @@ def _publish_engine_state() -> None:
             "canSave": _save_blocked_reason() is None,
             "isSkipping": bool(renpy.config.skipping),
             "inGame": STATE.current_game_id is not None,
+            # True while the game's own menu (or its main menu) is up. The overlay greys
+            # out rollback and skip there, because neither means anything on a menu page.
+            "inMenu": bool(getattr(_api().context(), "_menu", False)),
         }
     except Exception:  # noqa: BLE001
         # The engine is mid-restart or otherwise not answering. Saying nothing is right:
@@ -592,4 +685,5 @@ _HANDLERS = {
     "quickLoad": _handle_quick_load,
     "rollback": _handle_rollback,
     "toggleSkip": _handle_toggle_skip,
+    "showMenu": _handle_show_menu,
 }
