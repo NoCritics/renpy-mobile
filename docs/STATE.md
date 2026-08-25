@@ -14,32 +14,37 @@ Milestone B merge.
 
 ## The build to install
 
-**Run `32852419754`**, branch `milestone-c/library-and-import`, artifact `VNPlayer-ipa`
-(28,733,222 bytes). Sideloadly as usual — `docs/INSTALL.md`.
+**Run `32854597268`**, branch `milestone-c/library-and-import`, artifact `VNPlayer-ipa`
+(28,731,312 bytes). Sideloadly as usual — `docs/INSTALL.md`.
 
 ## What to check, in order
 
-Confirmed on device: roll back works, skip works, the strip looks right. The
-`renpy.exports` bugs are closed. **What has never run on hardware is the three new icons
-that open the game's own menu pages.**
+Confirmed on device: roll back, skip, the strip, and the three icons that open the game's
+own Save, Load and Preferences pages. What is untested is the strip's new order and one
+attempted fix.
 
-1. **The strip now has nine icons in three groups**, separated by hairlines: roll back,
-   quick save, quick load, skip ┊ save, load, settings ┊ magnify, library. It is about
-   396pt tall against 428pt of landscape screen — if it feels cramped, quick load is the
-   one to drop, since the Load page covers it.
-2. **Save, Load and Settings open the game's OWN pages** — every slot with its
-   thumbnails, and the game's real preferences. Not ours.
-3. **Tapping a second one while a page is already open switches pages**, and a single
-   dismissal returns to the game. If it takes two dismissals, the in-menu branch is not
-   firing and it is stacking contexts.
-4. **On a menu page, roll back and skip go grey** (the new `inMenu` state), and quick
-   save is already greyed there by `canSave`.
-5. **Library from inside a menu page.** `quitToLibrary` raises through the nested menu
+1. **The strip reads top to bottom**: roll back, skip ┊ save, load, settings ┊ magnify,
+   library ┊ quick save, quick load. The last pair moved to the bottom because their old
+   icons — `square.and.arrow.up` is the iOS *share* glyph — read as file export and
+   import. Their symbols changed too, to plain arrows-to-a-line.
+2. **THE OPEN BUG: after tapping Add game the `.zip` files are sometimes not listed**, and
+   it takes repeated attempts or an app restart before they appear. Two candidate causes
+   were both addressed blind, because neither is reproducible off-device:
+   - the picker filtered on `.zip` alone, and a provider that has not yet typed a file
+     lists it greyed out and untappable — indistinguishable from absent. Now accepts the
+     archive types and the extension-derived type as well.
+   - `beginImport()` re-presented unconditionally; setting an already-true SwiftUI
+     `isPresented` does nothing, and the dismissal that follows leaves a picker that never
+     opens again.
+   **Capture a device log while reproducing it.** Three new argument-free lines say which
+   half is at fault, and they are the whole point of this build:
+   `importer: opening` / `importer: already open, ignoring` / `importer: picked a file`.
+   If `opening` appears and no file is ever picked, the provider listed nothing and the
+   problem is not ours. If `already open, ignoring` appears, the second cause was real.
+3. **Library from inside a menu page.** `quitToLibrary` raises through the nested menu
    context. `call_in_new_context` pops in a `finally`, so it should unwind clean — but
    that is reasoning, not evidence, and this is the check that turns it into evidence.
-6. **Preferences at a game's title screen** should work (Ren'Py allows it), and **Save
-   there should refuse in words** — "you cannot save from the main menu".
-7. **Magnifier**: zoom, pan, Done. Watch whether the game still responds correctly after
+4. **Magnifier**: zoom, pan, Done. Watch whether the game still responds correctly after
    exiting, and whether panning ever scrolls dialogue backwards (it must not).
 
 ## The bug worth remembering
@@ -103,7 +108,8 @@ working and silently breaks quit-to-library. There is deliberately no such wrapp
 
 ## Still open
 
-- The three menu icons have not been on a device; items 1-6 above are their first pass.
+- **The Add game picker sometimes lists no files** — item 2 above, fixed blind, unconfirmed.
+- The strip's new order and the two replaced symbols have not been on a device.
 - Whether the magnifier leaves SDL in a good state after exiting.
 - **Cover art**, re-import/update, rename, app settings: not built.
 - **Export saves** deferred, by your call. Saves already sit in `Documents/Saves/<gameId>/`
