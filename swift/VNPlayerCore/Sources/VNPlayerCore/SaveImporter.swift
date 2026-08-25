@@ -84,7 +84,12 @@ public enum SaveImporter {
                 return SaveImportPlanSet(kind: .game, isForeign: true,
                                          plans: [], missingGames: [])
             }
-            let data = (try? Data(contentsOf: source)) ?? Data()
+            let data: Data
+            do {
+                data = try Data(contentsOf: source)
+            } catch {
+                throw SaveTransferError.damagedFile(name: source.lastPathComponent)
+            }
             let plan = build(gameId: nil, title: nil, isForeign: true,
                              incoming: [(source.lastPathComponent, SaveDigest.sha256(of: data))],
                              directory: directory, sourcePrefix: "")
@@ -105,6 +110,11 @@ public enum SaveImporter {
         var groupPrefix: [String: String] = [:]
         var sawGameDirectory = false
         var entryCount = 0
+        // I2: the four EntryPolicy rejections ArchiveImporter enforces that this path
+        // used to skip entirely. Spec §6/§8: "Save transfer adds no new policy and gets
+        // no exemption from the old one" -- mirrored here rather than re-derived.
+        var seenLowercased = Set<String>()
+        var totalUncompressed: Int64 = 0
 
         for entry in archive {
             guard let relative = try EntryPolicy.sanitize(entry.path) else { continue }
@@ -113,6 +123,22 @@ public enum SaveImporter {
             if entryCount > caps.maxEntries {
                 throw ImportError.tooManyEntries(count: UInt64(entryCount),
                                                  limit: caps.maxEntries)
+            }
+
+            if entry.type == .symlink {
+                throw ImportError.symlinkNotAllowed(entry: relative)
+            }
+
+            // Case-insensitive: iOS's filesystem folds case, so two entries differing
+            // only in case are the same destination. Checked for every file entry, not
+            // only ones that turn out to be save slots -- the archive is untrusted before
+            // any name filter runs.
+            if entry.type == .file {
+                let key = relative.lowercased()
+                if seenLowercased.contains(key) {
+                    throw ImportError.duplicateEntry(path: relative)
+                }
+                seenLowercased.insert(key)
             }
 
             let components = relative.split(separator: "/").map(String.init)
@@ -131,8 +157,26 @@ public enum SaveImporter {
                                                 limit: caps.maxEntryUncompressed)
             }
 
+            let compressedSize = Int64(entry.compressedSize)
+            if compressedSize > 0 {
+                let ratio = Double(uncompressedSize) / Double(compressedSize)
+                if ratio > caps.maxCompressionRatio {
+                    throw ImportError.suspiciousCompressionRatio(entry: name, ratio: ratio)
+                }
+            }
+
+            totalUncompressed += uncompressedSize
+            if totalUncompressed > caps.maxTotalUncompressed {
+                throw ImportError.archiveTooLarge(bytes: totalUncompressed,
+                                                  limit: caps.maxTotalUncompressed)
+            }
+
             var data = Data()
-            _ = try? archive.extract(entry) { data.append($0) }
+            do {
+                _ = try archive.extract(entry) { data.append($0) }
+            } catch {
+                throw SaveTransferError.damagedFile(name: name)
+            }
 
             // `games/<id>/x.save` groups by id; anything else is one anonymous group.
             let key = (components.count >= 3 && components[0] == "games")
@@ -357,7 +401,14 @@ extension SaveImporter {
                     throw SaveTransferError.damagedFile(name: placement.sourceName)
                 }
                 var buffer = Data()
-                _ = try? archive.extract(entry) { buffer.append($0) }
+                do {
+                    _ = try archive.extract(entry) { buffer.append($0) }
+                } catch {
+                    // I6: `try?` here used to discard a CRC mismatch and write the empty
+                    // buffer as the save, counted as added and reported as success. A
+                    // zero-byte save file is never a correct outcome.
+                    throw SaveTransferError.damagedFile(name: placement.sourceName)
+                }
                 data = buffer
             } else {
                 // A bare .save contains exactly one save: itself. Checking the name rather
@@ -367,7 +418,11 @@ extension SaveImporter {
                 guard placement.sourceName == source.lastPathComponent else {
                     throw SaveTransferError.damagedFile(name: placement.sourceName)
                 }
-                data = (try? Data(contentsOf: source)) ?? Data()
+                do {
+                    data = try Data(contentsOf: source)
+                } catch {
+                    throw SaveTransferError.damagedFile(name: placement.sourceName)
+                }
             }
 
             let target = directory.appendingPathComponent(placement.destination.fileName)

@@ -156,17 +156,17 @@ jobs:
       # design holds only Games/ and Saves/ -- while the library index and command
       # spools stay in Library/Application Support where the Files app cannot reach them.
       - name: Expose Documents to the Files app
-        if: ${{ startsWith(github.ref, 'refs/heads/spike/') || startsWith(github.ref, 'refs/heads/milestone-c/') || startsWith(github.ref, 'refs/heads/milestone-d/') }}
+        if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/spike/') || startsWith(github.ref, 'refs/heads/milestone-c/') || startsWith(github.ref, 'refs/heads/milestone-d/') || startsWith(github.ref, 'refs/tags/v') }}
         run: bash scripts/ios/patch_info_plist.sh
 
       # Replace Ren'Py's generated .xcodeproj with one XcodeGen builds, so our Swift and
       # ObjC sources can be members of the target. Proven on the spike branch, 2026-08-25.
       - name: Install XcodeGen
-        if: ${{ startsWith(github.ref, 'refs/heads/spike/') || startsWith(github.ref, 'refs/heads/milestone-c/') || startsWith(github.ref, 'refs/heads/milestone-d/') }}
+        if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/spike/') || startsWith(github.ref, 'refs/heads/milestone-c/') || startsWith(github.ref, 'refs/heads/milestone-d/') || startsWith(github.ref, 'refs/tags/v') }}
         run: brew install xcodegen && xcodegen --version
 
       - name: Regenerate project with XcodeGen
-        if: ${{ startsWith(github.ref, 'refs/heads/spike/') || startsWith(github.ref, 'refs/heads/milestone-c/') || startsWith(github.ref, 'refs/heads/milestone-d/') }}
+        if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/spike/') || startsWith(github.ref, 'refs/heads/milestone-c/') || startsWith(github.ref, 'refs/heads/milestone-d/') || startsWith(github.ref, 'refs/tags/v') }}
         run: bash spike/build_spike.sh
 
       - name: Inspect generated project

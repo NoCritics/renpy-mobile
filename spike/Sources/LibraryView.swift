@@ -22,7 +22,10 @@ struct LibraryView: View {
         ) { result in
             model.handlePicked(result)
         }
-        .alert("Import failed", isPresented: errorBinding) {
+        // I5: one alert now serves import, export, backup and the game chooser, so a
+        // title naming only one of them was actively wrong for the other three -- she
+        // taps "Back up saves", something goes wrong, and the box reads "Import failed".
+        .alert("That didn't work", isPresented: errorBinding) {
             Button("OK", role: .cancel) { model.errorMessage = nil }
         } message: {
             Text(model.errorMessage ?? "")
@@ -102,6 +105,15 @@ struct LibraryView: View {
         if let save = UTType(filenameExtension: "save") {
             types.append(save)
         }
+        // I8: `.save` is not a UTI any app declares, so `UTType(filenameExtension:)`
+        // above yields a dynamic, provider-dependent type -- whether a bare `.save` is
+        // selectable then depends on what the document provider decided to advertise it
+        // as. `.data` is the broad catch-all every provider conforms to, so it is the
+        // difference between the file being greyed out (spec §5's bare-.save import does
+        // not exist) and being pickable and reported on: SaveImporter already rejects
+        // anything that isn't a save with a named sentence, so letting her choose it and
+        // get an honest message beats a file she cannot select at all.
+        types.append(.data)
         // Distinct identifiers only; the picker treats a repeated type as a conflict.
         var seen = Set<String>()
         return types.filter { seen.insert($0.identifier).inserted }

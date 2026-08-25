@@ -639,14 +639,19 @@ extension LibraryModel {
     }
 
     /// Called when the share sheet closes, whichever way: the reader picked a
-    /// destination, or cancelled. `UIActivityViewController` only dismisses once the
-    /// chosen activity has finished consuming `shareURL` (or none was chosen), so the
-    /// export file's job is done and it can be removed from `paths.imports` rather than
-    /// left there indefinitely -- see `cleanStaleExports`.
+    /// destination, or cancelled.
+    ///
+    /// I7: this used to also delete `shareURL` here, on the assumption that
+    /// `UIActivityViewController` only dismisses once the chosen activity has finished
+    /// consuming the file. That assumption does not reliably hold for AirDrop or
+    /// Save-to-Files, which can keep reading the URL asynchronously after the sheet
+    /// visibly closes -- deleting here could truncate the very backup this feature
+    /// exists to produce. `cleanStaleExports()` already sweeps `paths.imports` at every
+    /// launch and is safe to rely on for this instead: it costs one extra file sitting
+    /// in a hidden directory between now and the next launch, which is the safe
+    /// direction to be wrong in, versus a truncated backup. So `paths.imports` -- and
+    /// therefore the file's lifetime -- is owned by that sweep, not by this dismissal.
     func dismissShare() {
-        if let shareURL {
-            try? FileManager.default.removeItem(at: shareURL)
-        }
         shareURL = nil
     }
 
@@ -681,7 +686,20 @@ extension LibraryModel {
         // failed import from leaving a stale hint for the next, unrelated import.
         defer { importHint = nil }
 
-        guard case .success(let urls) = result, let url = urls.first else { return }
+        // I4: the game-import equivalent (`handlePicked`, above) sets `errorMessage` on
+        // a picker failure; this one silently returned, so a picker error here was a
+        // button that did nothing, forever.
+        switch result {
+        case .failure(let error):
+            errorMessage = error.localizedDescription
+            return
+        case .success(let urls):
+            guard let first = urls.first else { return }
+            handlePickedSave(url: first)
+        }
+    }
+
+    private func handlePickedSave(url: URL) {
         guard let paths else { return }
 
         let scoped = url.startAccessingSecurityScopedResource()
@@ -751,11 +769,24 @@ extension LibraryModel {
         for plan in set.plans {
             let into = plan.title.map { " into \($0)" } ?? ""
             let fresh = plan.addedCount - plan.newSlotCount
-            var line = "Import \(plan.addedCount) saves\(into)?"
-            if fresh > 0 { line += " \(fresh) go into empty slots." }
-            if plan.newSlotCount > 0 { line += " \(plan.newSlotCount) into new slots." }
+            // I10: "Import 1 saves" -- every count in this sentence needs its own
+            // singular, not just the leading one.
+            let saves = plan.addedCount == 1 ? "1 save" : "\(plan.addedCount) saves"
+            var line = "Import \(saves)\(into)?"
+            if fresh > 0 {
+                line += fresh == 1
+                    ? " 1 goes into an empty slot."
+                    : " \(fresh) go into empty slots."
+            }
+            if plan.newSlotCount > 0 {
+                line += plan.newSlotCount == 1
+                    ? " 1 into a new slot."
+                    : " \(plan.newSlotCount) into new slots."
+            }
             if !plan.alreadyPresent.isEmpty {
-                line += " \(plan.alreadyPresent.count) already here and will be skipped."
+                line += plan.alreadyPresent.count == 1
+                    ? " 1 already here and will be skipped."
+                    : " \(plan.alreadyPresent.count) already here and will be skipped."
             }
             lines.append(line)
         }
@@ -789,23 +820,36 @@ extension LibraryModel {
         do {
             let set = try SaveImporter.plan(source: url, resolve: { _ in directory },
                                             caps: .default)
-            guard let plan = set.plans.first else {
+            guard !set.plans.isEmpty else {
                 errorMessage = "There was nothing to import."
                 return
             }
 
+            // I3: this used to hand-build its own sentence, which drifted from
+            // `describe(_:)` and silently dropped two of its clauses (the empty-slot
+            // count, the already-present count) -- importing a bare .save already on the
+            // phone read "Import 0 saves into Big Bad Dogs? Nothing will be replaced."
+            // A save that reached the chooser could not name its own game (§4.2 case 3),
+            // so `describe` has no title to put in its "into <title>" clause; prepend
+            // the game she just picked instead of leaving the sheet silent about it.
+            let described = Self.describe(set)
+            let message = set.plans.contains(where: { $0.title != nil })
+                ? described
+                : "Into \(entry.title). " + described
+
+            // I3, minor: `set.plans` can be more than one entry even for a save file she
+            // picked a single game for -- a hand-made zip with two `games/<x>/` folders
+            // and no manifest plans two groups, both forced into the same directory here.
+            // A one-element array tripped `performSaveImport`'s lockstep guard.
             let confirmation = ImportConfirmation(
-                message: "Import \(plan.addedCount) saves into \(entry.title)? "
-                    + (plan.newSlotCount > 0
-                        ? "\(plan.newSlotCount) go into new slots. " : "")
-                    + "Nothing will be replaced.",
+                message: message,
                 warning: set.isForeign
                     ? "This file didn't come from VNPlayer. Ren'Py saves can contain "
                       + "code, so only open it if you trust where it came from."
                     : nil,
                 source: url,
                 set: set,
-                destinations: [directory])
+                destinations: Array(repeating: directory, count: set.plans.count))
 
             // Same lockstep invariant as performSaveImport's guard below -- checked here
             // too because this is the other place an ImportConfirmation gets built by

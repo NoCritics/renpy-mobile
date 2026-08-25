@@ -54,22 +54,64 @@ final class SaveImporterApplyTests: XCTestCase {
         XCTAssertEqual(data, Data("contents of 1-1-LT1.save".utf8))
     }
 
+    /// I1: the previous version of this test compared `result` to `plan`
+    /// (`result.added` vs `set.plans[0].addedCount`, etc.), but `apply()` BUILDS `result`
+    /// from `plan` (`added: plan.placements.count`, `moved` counted over the same flag,
+    /// `skipped: plan.alreadyPresent.count`) -- so it was comparing the plan to itself.
+    /// An `apply` that skipped every `data.write` and just echoed the plan's counts back
+    /// into a `SaveImportResult` would still pass every assertion the old test made.
+    ///
+    /// This version asserts against the DESTINATION DIRECTORY instead -- the actual
+    /// files `apply()` did or did not write.
+    ///
+    /// Hand-trace against that exact broken `apply` (every `try data.write(...)` deleted,
+    /// but the final `return SaveImportResult(added: plan.placements.count, ...)` left in
+    /// place): `result.added`/`movedToNewSlot`/`skipped` would still read 1/1/1 below,
+    /// because those numbers come from `plan`, not from disk. But `newFiles` -- read from
+    /// `destination` after `apply` returns -- would be empty, so
+    /// `XCTAssertEqual(newFiles.count, result.added)` fails (0 != 1), and the following
+    /// `Data(contentsOf:)` read of "1-2-LT1.save" throws because the broken `apply` never
+    /// created it. That is exactly the gap the old test could not see.
     func testTheResultMatchesThePlanExactly() throws {
         try Data("something else".utf8)
             .write(to: destination.appendingPathComponent("1-1-LT1.save"))
+        try Data("contents of 9-9-LT1.save".utf8)
+            .write(to: destination.appendingPathComponent("9-9-LT1.save"))
 
-        let source = try makeExport(names: ["1-1-LT1.save"])
+        let before = names
+
+        let source = try makeExport(names: ["1-1-LT1.save", "9-9-LT1.save"])
         let set = try SaveImporter.plan(source: source,
                                         resolve: { _ in self.destination },
                                         caps: .default)
         let result = try SaveImporter.apply(set.plans[0], source: source,
                                             into: destination)
 
-        // A confirmation that describes something other than what happens is worse
-        // than no confirmation at all.
-        XCTAssertEqual(result.added, set.plans[0].addedCount)
-        XCTAssertEqual(result.movedToNewSlot, set.plans[0].newSlotCount)
-        XCTAssertEqual(result.skipped, set.plans[0].alreadyPresent.count)
+        XCTAssertEqual(result.added, 1)
+        XCTAssertEqual(result.movedToNewSlot, 1)
+        XCTAssertEqual(result.skipped, 1)
+
+        let after = names
+        let newFiles = after.subtracting(before)
+
+        // `result.added` new files actually exist.
+        XCTAssertEqual(newFiles.count, result.added,
+                       "result.added does not match what actually landed on disk")
+
+        // `result.movedToNewSlot` of them sit at a name differing from their source name
+        // ("1-1-LT1.save" was taken, so the incoming file was placed at "1-2-LT1.save").
+        XCTAssertEqual(newFiles, ["1-2-LT1.save"])
+        XCTAssertEqual(
+            try Data(contentsOf: destination.appendingPathComponent("1-2-LT1.save")),
+            Data("contents of 1-1-LT1.save".utf8),
+            "the moved save's bytes must be the incoming file's, written for real")
+
+        // The one skipped incoming name ("9-9-LT1.save") produced no new file: the
+        // existing file is untouched, and nothing else on its page was created either.
+        XCTAssertEqual(
+            try Data(contentsOf: destination.appendingPathComponent("9-9-LT1.save")),
+            Data("contents of 9-9-LT1.save".utf8))
+        XCTAssertFalse(after.contains("9-10-LT1.save"))
     }
 
     func testAnExistingSaveIsNeverReplaced() throws {

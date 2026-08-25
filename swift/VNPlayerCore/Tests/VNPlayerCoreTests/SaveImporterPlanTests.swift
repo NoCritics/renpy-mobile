@@ -205,6 +205,110 @@ final class SaveImporterPlanTests: XCTestCase {
             try SaveImporter.plan(source: zip, resolve: alwaysResolve, caps: .default))
     }
 
+    // MARK: - I2: the four EntryPolicy rejections this path used to skip
+    //
+    // ArchiveImporterTests already covers these for the game-import path; these four
+    // exist because `SaveImporter.plan` had its own, separate loop over the archive that
+    // enforced only `maxEntries` and `maxEntryUncompressed` (ArchiveImporterTests does
+    // not exercise SaveImporter at all, so nothing here was implied by those tests
+    // passing). Spec §6/§8: "Save transfer adds no new policy and gets no exemption from
+    // the old one" -- these are the four ArchiveImporter enforces that SaveImporter did
+    // not, and the real harm is `plan()` extracting every save entry into memory to
+    // digest it before any of these caps stood in the way: a crafted zip was an
+    // out-of-memory kill with no message.
+
+    func testASymlinkEntryIsRejected() throws {
+        let zip = root.appendingPathComponent("symlink.zip")
+        let archive = try XCTUnwrap(try? Archive(url: zip, accessMode: .create))
+        let target = Data("/etc/passwd".utf8)
+        try archive.addEntry(with: "1-1-LT1.save", type: .symlink,
+                             uncompressedSize: Int64(target.count)) { position, size in
+            target.subdata(in: Int(position)..<(Int(position) + size))
+        }
+
+        XCTAssertThrowsError(
+            try SaveImporter.plan(source: zip, resolve: alwaysResolve, caps: .default)
+        ) { error in
+            guard let importError = error as? ImportError else {
+                return XCTFail("expected an ImportError, got \(error)")
+            }
+            guard case .symlinkNotAllowed = importError else {
+                return XCTFail("expected symlinkNotAllowed, got \(importError)")
+            }
+        }
+    }
+
+    func testACaseInsensitiveDuplicateEntryIsRejected() throws {
+        // iOS folds case, so these two entries are one destination -- the same hazard
+        // ArchiveImporter's `testCaseInsensitiveDuplicateIsRejected` guards on the
+        // game-import path.
+        let zip = root.appendingPathComponent("duplicate.zip")
+        let archive = try XCTUnwrap(try? Archive(url: zip, accessMode: .create))
+        for name in ["saves/1-1-LT1.save", "SAVES/1-1-LT1.SAVE"] {
+            let payload = Data("x".utf8)
+            try archive.addEntry(with: name, type: .file,
+                                 uncompressedSize: Int64(payload.count),
+                                 compressionMethod: .none) { position, size in
+                payload.subdata(in: Int(position)..<(Int(position) + size))
+            }
+        }
+
+        XCTAssertThrowsError(
+            try SaveImporter.plan(source: zip, resolve: alwaysResolve, caps: .default)
+        ) { error in
+            guard let importError = error as? ImportError else {
+                return XCTFail("expected an ImportError, got \(error)")
+            }
+            guard case .duplicateEntry = importError else {
+                return XCTFail("expected duplicateEntry, got \(importError)")
+            }
+        }
+    }
+
+    func testExcessiveCompressionRatioIsRejected() throws {
+        // Real assets (png, ogg, webp, an already-zipped .save) barely shrink. A ratio
+        // this high on a save-named entry is a zip bomb, not a save file.
+        let zip = root.appendingPathComponent("bomb.zip")
+        let archive = try XCTUnwrap(try? Archive(url: zip, accessMode: .create))
+        let payload = Data(repeating: 0, count: 200_000)
+        try archive.addEntry(with: "1-1-LT1.save", type: .file,
+                             uncompressedSize: Int64(payload.count),
+                             compressionMethod: .deflate) { position, size in
+            payload.subdata(in: Int(position)..<(Int(position) + size))
+        }
+
+        let caps = ImportCaps(maxEntries: .max, maxTotalUncompressed: .max,
+                              maxEntryUncompressed: .max, maxCompressionRatio: 2)
+
+        XCTAssertThrowsError(
+            try SaveImporter.plan(source: zip, resolve: alwaysResolve, caps: caps)
+        ) { error in
+            guard let importError = error as? ImportError else {
+                return XCTFail("expected an ImportError, got \(error)")
+            }
+            guard case .suspiciousCompressionRatio = importError else {
+                return XCTFail("expected suspiciousCompressionRatio, got \(importError)")
+            }
+        }
+    }
+
+    func testTotalUncompressedCapIsEnforced() throws {
+        let source = try makeExport(names: ["1-1-LT1.save", "1-2-LT1.save"])
+        let caps = ImportCaps(maxEntries: .max, maxTotalUncompressed: 10,
+                              maxEntryUncompressed: .max, maxCompressionRatio: .infinity)
+
+        XCTAssertThrowsError(
+            try SaveImporter.plan(source: source, resolve: alwaysResolve, caps: caps)
+        ) { error in
+            guard let importError = error as? ImportError else {
+                return XCTFail("expected an ImportError, got \(error)")
+            }
+            guard case .archiveTooLarge = importError else {
+                return XCTFail("expected archiveTooLarge, got \(importError)")
+            }
+        }
+    }
+
     func testATwoGameBackupKeepsEachGamesSavesUnderItsOwnPrefix() throws {
         // The ambiguity this field exists to remove: both games have a save named
         // 1-1-LT1.save, so a last-path-component match cannot tell them apart, and a
@@ -248,6 +352,11 @@ final class SaveImporterPlanTests: XCTestCase {
 
         let set = try SaveImporter.plan(source: source, resolve: alwaysResolve,
                                         caps: .default)
+
+        // A loop with no assertion that it ran even once would pass whether or not
+        // "bigbaddogs" is actually among the plans -- assert the match exists first.
+        XCTAssertTrue(set.plans.contains { $0.gameId == "bigbaddogs" },
+                     "expected a plan for bigbaddogs")
 
         for plan in set.plans where plan.gameId == "bigbaddogs" {
             XCTAssertFalse(plan.placements.contains { $0.sourceName == "9-9-LT1.save" },
