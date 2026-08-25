@@ -264,8 +264,28 @@ rejected with specific messages rather than skipped.
 3. **Stream-extract** to `Imports/<uuid>/`, applying §7.3 per entry.
 4. **Locate the basedir** — the directory containing `game/`. If none, fail with
    *"This doesn't look like a Ren'Py game."*
-5. **Detect the engine** from `.rpyc` magic — v1 is Ren'Py 7, v2 is Ren'Py 8. A Ren'Py 7
-   game is refused up front rather than being allowed to fail as a black screen later.
+5. **Detect the engine.** A Ren'Py 7 game is refused up front rather than being allowed
+   to fail as a black screen later.
+
+   **This spec originally said to read `.rpyc` magic — "v1 is Ren'Py 7, v2 is Ren'Py 8" —
+   and that is wrong,** inherited from the parent spec. `renpy/script.py:58` defines
+   `RPYC2_HEADER = b"RENPY RPC2"` and *both* Ren'Py 7 and Ren'Py 8 write it; the v1/v2
+   distinction is the rpyc container format, which last changed long before Ren'Py 7.
+   Implementing it as written would have classified every game as Ren'Py 8 and let
+   Ren'Py 7 games through to fail as exactly the black screen the check exists to
+   prevent — a check that cannot fail, again.
+
+   The real signals, in order of confidence:
+
+   1. `renpy/vc_version.py` contains `version = '8.5.3.26051504'`. Definitive whenever
+      the distribution ships the engine, which full PC releases do.
+   2. `lib/py3-*` (Ren'Py 8) versus `lib/py2-*` or `lib/*-i686` (Ren'Py 7).
+   3. Neither — a `game/`-only archive carries no engine marker at all.
+
+   Case 3 **imports anyway**. Refusing everything unclassifiable would reject a large
+   share of perfectly good Ren'Py 8 games; if it turns out to be Ren'Py 7 it fails at
+   launch with a `launchFailed` message. Worse than catching it here, much better than
+   refusing a game that would have worked.
 6. **Extract a cover** if present (`game/gui/window_icon.png`, `icon.png`).
 7. **Atomically move** `Imports/<uuid>/<basedir>` to `Games/<gameId>/`, then write the
    library entry. Order matters: an entry must never name a directory that is not there.
@@ -491,6 +511,22 @@ left open:
 4. **Touches outside any overlay control reach the game** — advancing dialogue works.
 5. Return to the library; launch a second game; saves from the first are intact and not
    visible to the second.
+
+## 11.4 Deployment target: raised to iOS 15
+
+**Decision taken during implementation, and it needs confirming.** renios' prototype sets
+`IPHONEOS_DEPLOYMENT_TARGET` to 13.0 and the project inherited that verbatim — it was
+never a choice anyone made.
+
+At an iOS 13 floor SwiftUI has no `@StateObject`, no `LazyVGrid`, no `.fileImporter` and
+no `.task`. The library would have to be written against UIKit collection views and a
+hand-rolled document picker, to protect devices that could not run an embedded CPython
+plus a Ren'Py game in the first place. iOS 15 shipped in 2021 and covers the iPhone 6s
+onward.
+
+Raising a *minimum* is safe against the prebuilt libraries, which were built for 13+ and
+run happily on later systems. If the tradeoff is unwanted, the cost of going back is
+rewriting the library UI, not the extractor or the engine layer.
 
 ## 12. Risks
 
