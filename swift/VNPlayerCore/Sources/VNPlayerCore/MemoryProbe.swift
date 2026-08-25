@@ -97,6 +97,12 @@ public final class MemoryLog {
         samples.append(MemoryProbe.sample(label))
     }
 
+    /// Appends a pre-built sample. Exists so tests can replay a real device trace
+    /// exactly; a live allocation cannot be made to reproduce a specific history.
+    public func inject(_ sample: MemorySample) {
+        samples.append(sample)
+    }
+
     /// Growth between the first and last sample carrying the same label prefix.
     ///
     /// Keyed on a label prefix rather than on sample count because the interesting
@@ -109,11 +115,32 @@ public final class MemoryLog {
         return (matching.count, last.footprintBytes - first.footprintBytes)
     }
 
-    /// Mean growth per return to the library. nil until there are two to compare.
+    /// Mean growth per return to the library, in steady state.
+    ///
+    /// **The first sample is excluded, and that is the whole point of this function.**
+    ///
+    /// Sample 1 is taken when the overlay installs, roughly a second into launch, while
+    /// the engine is still starting and before any game has ever been loaded. Measured on
+    /// device it was about 85 MB, against roughly 425 MB once the engine is up. Averaging
+    /// from it folds one-off engine startup into a per-switch figure and overstates the
+    /// leak enormously: the first device run reported "+73.3 MB per library visit" when
+    /// consecutive steady-state visits were 426, 426, 435, 451 -- about 8 MB.
+    ///
+    /// A number that is wrong by 9x in the alarming direction is not a conservative
+    /// estimate, it is a bad instrument. It would have justified a design change nothing
+    /// in the data called for.
     public func meanGrowthPerCycle(labelPrefix: String) -> Double? {
-        guard let (count, delta) = growth(forLabelPrefix: labelPrefix), count >= 2 else {
+        let matching = samples.filter { $0.label.hasPrefix(labelPrefix) }
+
+        // Need three: one to discard as the pre-engine baseline, then two to compare.
+        guard matching.count >= 3 else { return nil }
+
+        let steady = Array(matching.dropFirst())
+        guard let first = steady.first, let last = steady.last, steady.count >= 2 else {
             return nil
         }
-        return Double(delta) / Double(count - 1) / 1_048_576
+
+        let delta = last.footprintBytes - first.footprintBytes
+        return Double(delta) / Double(steady.count - 1) / 1_048_576
     }
 }

@@ -232,26 +232,56 @@ Other things to expect, from review:
 Touch coordinates while magnified stop being an open question, because nothing passes
 through while magnified. They become one again if magnification is ever made non-modal.
 
-## 7. Memory watch-and-warn
+## 7. Memory watch-and-warn — MEASURED, and no design change is needed
 
-Parent spec §14 decided watch-and-warn over a hard cap on switches: the realistic pattern
-is one switch then hours of reading, so a cap punishes everyone for a case few reach, and
-reproduces the artificial-limit feel of the paid apps this project exists to replace.
+The M2 spec left this unfinished on purpose, because writing a threshold from the desktop
+figure would have meant inventing a number and then defending it. The device reading now
+exists.
 
-**The threshold cannot be set from the desktop figure.** The harness measured Windows
-working-set at ~22 MB per switch; iOS kills on `phys_footprint`, a different number that
-counts compressed and IOKit-mapped memory. M2 shipped an on-device probe reporting
-`phys_footprint` and `os_proc_available_memory` into the library UI.
+**iPhone 13 Pro Max / iOS 26.6, 2026-08-25, a 1.2 GB commercial game, four launch-and-return
+cycles.** `phys_footprint`, with `os_proc_available_memory` alongside:
 
-**This section is deliberately unfinished until that reading exists.** Writing a threshold
-now would be inventing a number and then defending it. What is decided:
+| | footprint | free | delta |
+|---|---|---|---|
+| library 3 | 426 MB | 2646 MB | — |
+| game 3 | 615 MB | 2457 MB | |
+| library 4 | 426 MB | 2646 MB | **0 MB** |
+| game 4 | 624 MB | 2448 MB | |
+| library 5 | 435 MB | 2637 MB | +9 MB |
+| library 6 | 451 MB | 2621 MB | +16 MB |
 
-- The warning is dismissible and suggests restarting the app, never blocking a switch.
-- It triggers on headroom remaining (`os_proc_available_memory`), not on total used —
-  the distance to being killed is what matters, and it varies with what else the device
-  is doing.
-- `didReceiveMemoryWarningNotification` clears Ren'Py's image cache immediately,
-  regardless of the threshold.
+**About 8 MB per switch, against the desktop harness's 22 MB.** The desktop figure
+overstated the device by roughly 3x — which is exactly why it needed replacing rather than
+trusting, and why the parent spec was right to refuse a threshold derived from it.
+
+At ~8 MB per switch against ~2.6 GB of headroom, that is on the order of **300 switches**
+in a session. The realistic pattern is one or two switches and then hours of reading.
+**Nothing here forces a design change**, and the parent spec's rejection of a hard cap on
+switches stands, now on evidence rather than on principle.
+
+### 7.1 The threshold
+
+Warn when `os_proc_available_memory()` falls below **500 MB**, dismissible, suggesting a
+restart. Chosen against the measurement: a game sits at ~2.45 GB free, so 500 MB is about
+240 switches away from anything observed — far enough that a false alarm is unlikely, and
+early enough to leave room to act. It triggers on headroom rather than total used, because
+headroom varies with what else the device is doing and is the distance that actually
+matters.
+
+`didReceiveMemoryWarningNotification` still clears Ren'Py's image cache immediately,
+independently of the threshold.
+
+### 7.2 The instrument overstated the leak, and that is worth recording
+
+The first device reading reported **"+73.3 MB per library visit"** — nine times the truth.
+The mean was taken from the first library sample, which is recorded when the overlay
+installs, about a second into launch, while the engine is still starting and before any
+game has ever been loaded. That sample was ~85 MB against ~425 MB in steady state, so
+one-off engine startup was being amortised into a per-switch figure.
+
+A number wrong by 9x in the alarming direction is not a conservative estimate. It would
+have justified a design change nothing in the data called for. Fixed by discarding the
+pre-engine baseline, with the real trace above pinned as a regression test.
 
 ## 8. Save integration
 

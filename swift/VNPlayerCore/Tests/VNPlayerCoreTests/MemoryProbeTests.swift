@@ -57,6 +57,43 @@ final class MemoryProbeTests: XCTestCase {
                        "game samples must not be counted as library cycles")
     }
 
+    func testMeanGrowthExcludesThePreEngineBaseline() throws {
+        // Reproduces the real device reading. The first sample is taken while the engine
+        // is still starting, long before any game has loaded, so including it turns an
+        // 8 MB-per-switch steady state into a 73 MB alarm.
+        //
+        // Hand-built samples rather than live readings: the point is the arithmetic, and
+        // a real allocation cannot be made to reproduce a specific historical trace.
+        let log = MemoryLog()
+        let observed: [(String, Int64)] = [
+            ("library 1", 85),    // overlay installed; engine not up yet
+            ("library 2", 420),
+            ("library 3", 426),
+            ("library 4", 426),
+            ("library 5", 435),
+            ("library 6", 451),
+        ]
+        for (label, mb) in observed {
+            log.inject(MemorySample(
+                label: label, footprintBytes: mb * 1_048_576, availableBytes: 0))
+        }
+
+        let mean = log.meanGrowthPerCycle(labelPrefix: "library")
+        // (451 - 420) / 4 = 7.75, not (451 - 85) / 5 = 73.2
+        XCTAssertEqual(try XCTUnwrap(mean), 7.75, accuracy: 0.01)
+    }
+
+    func testMeanGrowthNeedsThreeSamplesNotTwo() {
+        // Two samples are one interval, and with the baseline discarded that leaves
+        // nothing to compare. Reporting a number from it would report the startup cost.
+        let log = MemoryLog()
+        log.inject(MemorySample(label: "library 1", footprintBytes: 85_000_000, availableBytes: 0))
+        log.inject(MemorySample(label: "library 2", footprintBytes: 440_000_000, availableBytes: 0))
+
+        XCTAssertNil(log.meanGrowthPerCycle(labelPrefix: "library"),
+                     "reported growth from a single post-baseline sample")
+    }
+
     func testMeanGrowthDividesByCyclesNotSamples() {
         // Three library samples are TWO cycles. Dividing by three would understate the
         // leak by a third, which is exactly the kind of quiet error that makes a
