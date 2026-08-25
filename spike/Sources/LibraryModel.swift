@@ -154,8 +154,13 @@ final class LibraryModel: ObservableObject {
             at: paths.imports, includingPropertiesForKeys: [.isDirectoryKey]) else { return }
 
         for url in contents {
-            let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?
-                .isDirectory ?? false
+            // Fail CLOSED. If the file system will not tell us what this is, leave it
+            // alone: `removeItem` deletes a directory recursively, and the directory next
+            // to these exports is game-import staging, which can hold a multi-gigabyte
+            // extraction. An unknown entry is worth leaking; it is not worth deleting.
+            guard let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?
+                    .isDirectory else { continue }
+
             if !isDirectory {
                 try? FileManager.default.removeItem(at: url)
             }
