@@ -391,8 +391,10 @@ final class SaveImporterPlanTests: XCTestCase {
         // one imported save.
         let zip = root.appendingPathComponent("zero-byte.zip")
         let archive = try XCTUnwrap(try? Archive(url: zip, accessMode: .create))
+        // Int64(0), not 0: a bare literal is ambiguous between this overload and
+        // ZIPFoundation's deprecated UInt32 one, and the ambiguity is a build error.
         try archive.addEntry(with: "1-1-LT1.save", type: .file,
-                             uncompressedSize: 0,
+                             uncompressedSize: Int64(0),
                              compressionMethod: .none) { _, _ in Data() }
 
         XCTAssertThrowsError(
