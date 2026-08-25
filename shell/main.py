@@ -50,17 +50,38 @@ def path_to_saves(gamedir: str, save_directory: str | None = None) -> str:
     deleting or re-importing a game never destroys progress.
     """
 
+    from vnshell import platform
     from vnshell.state import STATE
 
     if STATE.saves_root and STATE.current_game_id:
-        return os.path.join(STATE.saves_root, STATE.current_game_id)
+        return platform.ensure_dir(
+            os.path.join(STATE.saves_root, STATE.current_game_id)
+        )
 
-    # The shell project, or a not-yet-identified game: keep saves beside the game.
-    return os.path.join(gamedir, "saves")
+    # The shell project, or a not-yet-identified game.
+    #
+    # This used to return <gamedir>/saves unconditionally, which on iOS is inside the
+    # read-only app bundle: the sandbox denied it on every launch
+    # (deny(1) file-write-create .../base/game/saves). On desktop <gamedir>/saves is
+    # correct and stays, because data_root() returns its fallback unchanged off-iOS.
+    return platform.ensure_dir(
+        os.path.join(platform.data_root(gamedir), "saves")
+    )
 
 
 def path_to_logdir(basedir: str) -> str:
-    return basedir
+    """Return a writable directory for Ren'Py's log and traceback files.
+
+    Note that on iOS Ren'Py never opens log.txt at all -- renpy/log.py:79 points the log
+    at real stdout when renpy.ios is set, and renios routes stdout through NSLog. This
+    override therefore does not affect logging on the device; it exists because
+    config.logdir is also where traceback.txt and errors.txt are written, and those must
+    not target the read-only bundle.
+    """
+
+    from vnshell import platform
+
+    return platform.ensure_dir(platform.data_root(basedir))
 
 
 def predefined_searchpath(commondir: str | None) -> list[str]:
@@ -79,6 +100,16 @@ def main() -> None:
     sys.path.append(renpy_base)
 
     warnings.simplefilter("ignore", DeprecationWarning)
+
+    # Every import from the bundle otherwise tries to drop a .pyc beside its source, and
+    # on iOS the bundle is read-only, so each one costs a failed syscall and a sandbox
+    # denial in the device log (measured: deny(1) file-write-create .../base/vnshell/
+    # __pycache__). Python already falls back to running from source, so nothing breaks
+    # today -- this just stops the process asking for something it will never be given.
+    from vnshell import platform as vnplatform
+
+    if vnplatform.is_ios():
+        sys.dont_write_bytecode = True
 
     import renpy.bootstrap  # type: ignore
 

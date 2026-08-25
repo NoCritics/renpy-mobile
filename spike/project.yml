@@ -1,0 +1,146 @@
+# THROWAWAY SPIKE CODE — not the eventual design.
+#
+# Replaces the .xcodeproj that Ren'Py's ios_create generates. The division of labour
+# being tested: Ren'Py's own tooling still runs and still produces base/ (the engine, the
+# stdlib, the game), because that part works and reimplementing it would be madness. But
+# the Xcode project itself is ours, generated declaratively, so adding a Swift file does
+# not mean surgery on a generated pbxproj.
+#
+# Every value below was read out of renios' own prototype.xcodeproj rather than guessed.
+
+name: VNPlayer
+
+options:
+  bundleIdPrefix: io.github.nocritics
+  deploymentTarget:
+    # RAISED from renios' own 13.0, deliberately, and this is a product decision worth
+    # confirming rather than a technical necessity.
+    #
+    # SwiftUI at an iOS 13 floor cannot use @StateObject, LazyVGrid, .fileImporter or
+    # .task -- all iOS 14/15 -- which means writing the library UI against UIKit
+    # collection views instead. iOS 15 shipped in 2021 and covers the iPhone 6s onward;
+    # a device older than that would not have the memory to run a Ren'Py game under an
+    # embedded CPython in any case, so the floor was costing real work to protect
+    # devices that cannot run this app.
+    #
+    # 13.0 was never a decision -- it was inherited verbatim from renios' prototype.
+    iOS: "15.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+targets:
+  VNPlayer:
+    type: application
+    platform: iOS
+
+    sources:
+      # Ren'Py's own prototype sources, copied into this directory by ios_create.
+      - path: main.c
+      - path: Log.m
+      - path: VideoPlayer.m
+      - path: IAPHelper.m
+
+      # base/ is a FOLDER REFERENCE, not a group: it holds the engine, the stdlib and the
+      # game, and must be copied into the bundle wholesale with its structure intact.
+      # renios' prototype declares it lastKnownFileType = folder for the same reason.
+      - path: base
+        type: folder
+        buildPhase: resources
+
+      - path: Media.xcassets
+      - path: Launch Screen.storyboard
+      - path: LaunchImage-background.png
+      - path: LaunchImage-foreground.png
+
+      # Ours: the app layer (windows, SwiftUI) ...
+      - path: vnspike
+
+      # ... and the pure-logic core, compiled straight into the app target rather than
+      # linked as a SwiftPM package. The same files are a package under
+      # swift/VNPlayerCore so `swift test` can run them headlessly on a macOS runner
+      # with no simulator; making the Xcode project depend on SwiftPM resolution would
+      # need network at build time and undermine "builds identically on any fork".
+      - path: vncore
+      - path: vnzip
+
+    dependencies:
+      # MetalANGLE is a DYNAMIC framework -- renios embeds it via a Copy Files phase
+      # (dstSubfolderSpec 10), and its binary is a fat Mach-O, not a static archive.
+      # embed: true is therefore required, not optional.
+      - framework: Frameworks/MetalANGLE.xcframework
+        embed: true
+        codeSign: false
+
+      - sdk: UIKit.framework
+      - sdk: Foundation.framework
+      - sdk: CoreGraphics.framework
+      - sdk: CoreMotion.framework
+      - sdk: CoreServices.framework
+      - sdk: MobileCoreServices.framework
+      - sdk: AudioToolbox.framework
+      - sdk: GameController.framework
+      - sdk: ImageIO.framework
+      - sdk: QuartzCore.framework
+      # ZIPFoundation inflates ZIP method 8 through compression_stream. On Apple
+      # platforms COMPRESSION_ZLIB handles raw DEFLATE directly -- verified by reading
+      # the library rather than by trusting a review comment that claimed otherwise.
+      - sdk: libcompression.tbd
+      - sdk: UniformTypeIdentifiers.framework
+
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.nocritics.vnplayer
+        INFOPLIST_FILE: Info.plist
+        TARGETED_DEVICE_FAMILY: "1,2"
+
+        SWIFT_VERSION: "5.0"
+        ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES: YES
+        CLANG_ENABLE_MODULES: YES
+
+        HEADER_SEARCH_PATHS:
+          - $(inherited)
+          - $(SRCROOT)/vnspike
+
+        LIBRARY_SEARCH_PATHS:
+          - $(inherited)
+          - $(SRCROOT)/prebuilt/release
+
+        FRAMEWORK_SEARCH_PATHS:
+          - $(inherited)
+          - $(SRCROOT)/Frameworks
+
+        # Verbatim from renios' prototype, in its order -- static archive link order is
+        # significant and this is not a list to tidy.
+        # -Wl,-export_dynamic was tried and REMOVED: the device showed ctypes could not
+        # resolve any symbol here, including libpython's own, so exporting more of them
+        # was never going to help. The bridge no longer depends on symbol lookup.
+        OTHER_LDFLAGS:
+          - -lrenpython
+          - -lrenpy
+          - -lpython3.12
+          - -lassimp
+          - -lavformat
+          - -lavcodec
+          - -lswscale
+          - -lswresample
+          - -lavutil
+          - -lSDL2_image
+          - -lSDL2
+          - -lavif
+          - -laom
+          - -lyuv
+          - -lturbojpeg
+          - -lpng16
+          - -lwebp
+          - -lharfbuzz
+          - -lbrotlidec
+          - -lbrotlicommon
+          - -lfribidi
+          - -lfreetype
+          - -lffi
+          - -lssl
+          - -lcrypto
+          - -llzma
+          - -lbz2
+          - -lz
+          - -lstdc++

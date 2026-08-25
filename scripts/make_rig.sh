@@ -24,6 +24,11 @@ rm -rf "$RIG/vnshell"
 cp "$ROOT/shell/main.py" "$RIG/main.py"
 cp -r "$ROOT/shell/vnshell" "$RIG/vnshell"
 
+# The per-game hook. Ren'Py scans config.renpy_base for *.rpe.py during early init on
+# EVERY restart (renpy/main.py:352-362), which is how our periodic callback survives
+# into an imported game that never loads the shell project's script.rpy.
+cp "$ROOT/shell/vnplayer_hook.rpe.py" "$RIG/vnplayer_hook.rpe.py"
+
 rm -rf "$RIG/game"
 cp -r "$ROOT/shell-project/game" "$RIG/game"
 

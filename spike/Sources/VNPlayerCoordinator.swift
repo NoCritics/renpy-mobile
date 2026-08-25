@@ -1,0 +1,337 @@
+import UIKit
+import SwiftUI
+
+/// Owns the one window we put above SDL, and the state machine that moves between the
+/// library and a running game.
+///
+/// **One window, not two.** The parent spec called for a library window at `.normal + 2`
+/// above an overlay window at `.normal + 1`. Both consultation reviewers argued against
+/// it and the deciding reason is modal presentation: `UIDocumentPickerViewController` has
+/// to come up from the window that owns the interaction, and a window that never takes
+/// key status from SDL is where sheets come up blank or refuse to dismiss. One window
+/// that takes key while the library is showing and gives it back afterwards is fewer
+/// moving parts and removes the multi-window orientation problem outright.
+///
+/// **SDL's CADisplayLink is never paused.** The parent spec said to pause it while the
+/// library is up, so it stops presenting into a stale MetalANGLE context. Doing that
+/// would deadlock the launch: SDL drives Ren'Py's frame execution from that callback, and
+/// the command spool is drained from `config.periodic_callbacks`, which runs per frame.
+/// Pause it and the command we just wrote is never read -- the app hangs with the library
+/// up and no error at all. The engine idles cheaply behind an opaque library instead.
+@MainActor
+public final class VNPlayerCoordinator {
+
+    public static let shared = VNPlayerCoordinator()
+
+    private var window: PassthroughWindow?
+    private let model = LibraryModel()
+
+    private init() {}
+
+    // MARK: - Installation
+
+    /// Called from the ObjC bootstrap on first activation, after SDL's window exists.
+    /// Returns a code the bootstrap turns into an argument-free log line.
+    @discardableResult
+    public func install() -> Int32 {
+        guard Thread.isMainThread else { return -1 }
+        if window != nil { return 2 }
+
+        let scene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive }
+            ?? UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+
+        guard let windowScene = scene else { return -2 }
+
+        let window = PassthroughWindow(windowScene: windowScene)
+        window.windowLevel = .normal + 1
+        window.backgroundColor = .clear
+        window.isOpaque = false
+
+        let root = VNPlayerRootViewController(model: model)
+        window.rootViewController = root
+
+        // Assigning rootViewController does not load its view, and viewDidLoad runs
+        // before the view has a window -- so the controller cannot hand this over
+        // itself. Force the load, then wire it up here.
+        root.loadViewIfNeeded()
+        window.contentView = root.hostingView
+
+        if window.frame.isEmpty { return -3 }
+
+        window.isHidden = false
+        self.window = window
+
+        model.attach(coordinator: self)
+        model.start()
+
+        return 1
+    }
+
+    // MARK: - Key status
+
+    /// The library needs key status so the document picker and alerts behave; the game
+    /// needs SDL to have it back, because SDL reads input from the key window.
+    /// The single place that decides what the window does.
+    ///
+    /// Three inputs rather than one boolean, because the states are genuinely three:
+    /// library up, game running with the overlay closed, and game running with the
+    /// overlay open. Collapsing them into "is the library visible" is what produced an
+    /// overlay that passed touches through while open — dismissing it by tapping outside
+    /// would also have advanced the game's dialogue.
+    func applyWindow(passthrough: Bool, showControls: Bool, makeKey: Bool) {
+        guard let window else { return }
+
+        window.passthroughEnabled = passthrough
+        (window.rootViewController as? VNPlayerRootViewController)?
+            .setControlsVisible(showControls)
+
+        if makeKey {
+            window.makeKey()
+        } else {
+            // Handing key back to SDL's window explicitly rather than merely resigning:
+            // resignKey alone can leave the scene with no key window at all.
+            sdlWindow?.makeKey()
+        }
+    }
+
+    /// The strip lives on the root view controller, which owns the view hierarchy; the
+    /// model talks to the coordinator, which owns the window. These two forward across
+    /// that seam rather than handing the model a view controller to poke at.
+    private var rootController: VNPlayerRootViewController? {
+        window?.rootViewController as? VNPlayerRootViewController
+    }
+
+    func updateControls(canRollback: Bool, canSave: Bool, isSkipping: Bool, inMenu: Bool) {
+        rootController?.updateControls(
+            canRollback: canRollback, canSave: canSave, isSkipping: isSkipping,
+            inMenu: inMenu)
+    }
+
+    func showControlMessage(_ text: String) {
+        rootController?.showControlMessage(text)
+    }
+
+    /// SDL's own window — the one below ours on the same scene.
+    private var sdlWindow: UIWindow? {
+        window?.windowScene?.windows.first { $0 !== window }
+    }
+
+    /// The view Ren'Py renders into.
+    private var sdlContentView: UIView? {
+        sdlWindow?.rootViewController?.view ?? sdlWindow
+    }
+
+    private var originalSDLTransform: CATransform3D?
+
+    /// Scales and pans what the engine drew, without telling the engine.
+    ///
+    /// Applied to SDL's view, never to Ren'Py: games position their UI with hardcoded
+    /// pixel geometry, so changing font size clips dialogue out of its own box and breaks
+    /// custom screens. Scaling the rendered output cannot break a layout the game never
+    /// learns about — at the cost of being a viewport zoom of a rasterised texture, so
+    /// small text gets bigger AND softer.
+    ///
+    /// The original transform is saved on first use rather than assumed to be identity:
+    /// SDL may already be transforming its view for orientation, and overwriting that
+    /// with identity would be a rotation bug that only appears on some devices.
+    func applyMagnification(scale: CGFloat, offset: CGSize) {
+        guard let view = sdlContentView else { return }
+
+        if originalSDLTransform == nil {
+            originalSDLTransform = view.layer.transform
+        }
+
+        guard scale > 1.001 else {
+            if let original = originalSDLTransform {
+                view.layer.transform = original
+            }
+            return
+        }
+
+        let base = originalSDLTransform ?? CATransform3DIdentity
+        var transform = CATransform3DScale(base, scale, scale, 1)
+        transform = CATransform3DTranslate(transform, offset.width, offset.height, 0)
+        view.layer.transform = transform
+    }
+}
+
+/// Touches outside an actual control must reach the game underneath.
+///
+/// This lives on the WINDOW rather than on a replacement for the hosting controller's
+/// view. An earlier version subclassed `UIHostingController` and overrode `loadView` to
+/// install a plain `UIView`, which silently defeated the point of `UIHostingController`:
+/// its view is the hosting view that renders the SwiftUI tree, so substituting a plain
+/// one left a correctly-installed, correctly-sized, entirely empty window. On device that
+/// presented as "the overlay does not work" while the log said it had installed fine.
+public final class PassthroughWindow: UIWindow {
+
+    /// While the library is up it is opaque and must absorb every touch. While a game is
+    /// running, only real controls may take touches and everything else has to fall
+    /// through to SDL.
+    public var passthroughEnabled = false
+
+    /// The `UIHostingController`'s view. Load-bearing: see below.
+    public weak var contentView: UIView?
+
+    override public func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        guard let hit = super.hitTest(point, with: event) else { return nil }
+        guard passthroughEnabled else { return hit }
+
+        // Reject the two views that mean "empty space": the root view, and the SwiftUI
+        // HOSTING view.
+        //
+        // The hosting view is the part the first version missed, and it made the whole
+        // mechanism inert. It compared only against `rootViewController?.view` -- but
+        // that view has the hosting view as a full-size subview, so `super.hitTest`
+        // returns the HOSTING view, never the root. The comparison could not match, the
+        // window returned a hit for every touch, and a Ren'Py game rendered perfectly
+        // underneath while never receiving a single tap. A check that cannot fail again.
+        //
+        // Anything else that comes back is a real SwiftUI control, because the view tree
+        // marks its non-interactive regions with .allowsHitTesting(false).
+        if hit === rootViewController?.view { return nil }
+        if hit === contentView { return nil }
+        return hit
+    }
+}
+
+/// Hosts the SwiftUI library, and nothing else for now. The M3 overlay becomes a second
+/// child of this same controller.
+public final class VNPlayerRootViewController: UIViewController {
+
+    private let model: LibraryModel
+    private(set) var hostingView: UIView?
+    private weak var controlStrip: OverlayControlStrip?
+
+    init(model: LibraryModel) {
+        self.model = model
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    public override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .clear
+
+        let host = UIHostingController(rootView: LibraryView(model: model))
+        host.view.backgroundColor = .clear
+        addChild(host)
+        host.view.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(host.view)
+        NSLayoutConstraint.activate([
+            host.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            host.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            host.view.topAnchor.constraint(equalTo: view.topAnchor),
+            host.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+        host.didMove(toParent: self)
+
+        // The window needs this to tell "empty space" from "a control" -- see
+        // PassthroughWindow.hitTest.
+        (view.window as? PassthroughWindow)?.contentView = host.view
+        hostingView = host.view
+
+        buildControlStrip()
+
+        model.presenter = self
+    }
+
+    /// The always-visible control strip.
+    ///
+    /// UIKit rather than SwiftUI, and forced rather than chosen: the strip is on screen
+    /// permanently, so touches must pass through around it permanently, and
+    /// UIHostingController's view answers every hit test itself. See OverlayControlStrip.
+    private func buildControlStrip() {
+        let strip = OverlayControlStrip(items: [
+            // Reading. What the reader reaches for without looking away from the text.
+            .init(id: "rollback", symbol: "arrow.uturn.backward",
+                  accessibility: "Roll back") { [weak self] in self?.model.rollback() },
+            .init(id: "skip", symbol: "forward",
+                  accessibility: "Skip") { [weak self] in self?.model.toggleSkip() },
+
+            // The game's OWN pages, not ours: every slot with its thumbnails, and the
+            // game's real settings. On a phone this is the only route to them -- there is
+            // no Escape key, and a game's own quick-menu is often too small to hit.
+            .init(id: "menuSave", symbol: "tray.and.arrow.down", accessibility: "Save",
+                  startsGroup: true) { [weak self] in self?.model.showMenu(.save) },
+            .init(id: "menuLoad", symbol: "tray.and.arrow.up",
+                  accessibility: "Load") { [weak self] in self?.model.showMenu(.load) },
+            .init(id: "menuPreferences", symbol: "slider.horizontal.3",
+                  accessibility: "Settings") { [weak self] in self?.model.showMenu(.preferences) },
+
+            // Leaving this screen.
+            .init(id: "magnify", symbol: "plus.magnifyingglass", accessibility: "Magnify",
+                  startsGroup: true) { [weak self] in self?.model.enterMagnifier() },
+            .init(id: "library", symbol: "books.vertical",
+                  accessibility: "Back to library") { [weak self] in self?.model.returnToLibrary() },
+
+            // Quick save and quick load, last and on their own.
+            //
+            // They sat second and third, next to roll back, and got read as file export
+            // and import -- which is exactly what their symbols said: `square.and.arrow.up`
+            // IS the iOS share glyph. Two problems, and the position was only one of them,
+            // so both are fixed: they moved to the bottom, and the share glyph is gone.
+            // Nothing here writes a file anywhere the reader can see; that is a separate
+            // feature that does not exist yet, and it must not be pre-announced by an icon.
+            .init(id: "quickSave", symbol: "arrow.down.to.line", accessibility: "Quick save",
+                  startsGroup: true) { [weak self] in self?.model.quickSave() },
+            .init(id: "quickLoad", symbol: "arrow.up.to.line",
+                  accessibility: "Quick load") { [weak self] in self?.model.quickLoad() },
+        ])
+
+        strip.isHidden = true
+        view.addSubview(strip)
+
+        NSLayoutConstraint.activate([
+            strip.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor,
+                                            constant: -8),
+            strip.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+        ])
+
+        controlStrip = strip
+    }
+
+    func setControlsVisible(_ visible: Bool) {
+        controlStrip?.isHidden = !visible
+        if visible { controlStrip?.wake() }
+    }
+
+    /// Push the engine's own account of what it will accept.
+    ///
+    /// `inMenu` covers the game's own menu and its main menu alike. Rolling back or
+    /// skipping from a menu page means nothing, and quick save is already refused there
+    /// by `canSave`; leaving all three lit would offer the reader controls the engine has
+    /// already decided to turn down.
+    func updateControls(canRollback: Bool, canSave: Bool, isSkipping: Bool, inMenu: Bool) {
+        controlStrip?.setEnabled(canRollback && !inMenu, for: "rollback")
+        controlStrip?.setEnabled(canSave, for: "quickSave")
+        controlStrip?.setEnabled(!inMenu, for: "skip")
+        controlStrip?.setSymbol(isSkipping ? "forward.fill" : "forward", for: "skip")
+    }
+
+    func showControlMessage(_ text: String) {
+        controlStrip?.showMessage(text, in: view)
+    }
+
+    /// Must agree with SDL's mask or iOS raises UIApplicationInvalidInterfaceOrientation
+    /// on rotation. The app is landscape-only for now, so both are landscape.
+    public override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        .landscape
+    }
+}
+
+
+// MARK: - The C entry point the ObjC bootstrap calls
+
+/// Installs the window. Called from VNPlayerBootstrap.m's +load observer, which fires on
+/// the first UIApplicationDidBecomeActiveNotification -- i.e. after SDL's window exists,
+/// rather than racing it.
+@_cdecl("vnplayer_install_window")
+public func vnplayer_install_window() -> Int32 {
+    guard Thread.isMainThread else { return -1 }
+    return MainActor.assumeIsolated { VNPlayerCoordinator.shared.install() }
+}

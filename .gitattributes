@@ -1,3 +1,6 @@
-* text=auto eol=lf
-*.png binary
+# Vendored Swift source is stored and hashed as LF.
+*.swift text eol=lf
+
+# Test fixtures are binary; never touch them.
 *.zip binary
+*.bin binary

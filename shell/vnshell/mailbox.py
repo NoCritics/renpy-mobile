@@ -70,6 +70,14 @@ class Mailbox:
 
         name = entry.get("name")
         if not name:
+            # Report it. This branch used to return None silently, and that cost a
+            # device round-trip: the Swift side wrote {"command": "launch", ...} instead
+            # of {"name": "launch", "args": {...}}, every command was consumed and
+            # discarded here without a trace, and the symptom on the phone was a launch
+            # that did nothing at all until it timed out. A command channel that drops
+            # malformed messages in silence is indistinguishable from one that is not
+            # running.
+            self._report(f"entry has no 'name' key, ignoring: {entry!r}")
             return None
 
         args = entry.get("args") or {}

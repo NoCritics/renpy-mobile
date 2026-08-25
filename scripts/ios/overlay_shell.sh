@@ -27,8 +27,19 @@ cp -R "$ROOT/shell/vnshell" "$BASE/vnshell"
 find "$BASE/vnshell" -type d -name "__pycache__" -exec rm -rf {} +
 find "$BASE/vnshell" -type f -name "*.pyc" -delete
 
+# The per-game hook. Ren'Py scans config.renpy_base for *.rpe.py during early init on
+# EVERY restart (renpy/main.py:352-362) and execs each one. That is how our periodic
+# callback survives into an imported game, which loads its own script.rpy and never
+# ours -- without it the command channel goes deaf the moment a real game starts and
+# nothing can quit back to the library.
+#
+# It lives beside main.py rather than inside the game, because imported games are
+# untrusted third-party content and writing our code into their tree would risk
+# collisions and disguise our code as theirs.
+cp "$ROOT/shell/vnplayer_hook.rpe.py" "$BASE/vnplayer_hook.rpe.py"
+
 echo "=== overlay result ==="
-ls -la "$BASE/main.py" "$BASE/vnshell"
+ls -la "$BASE/main.py" "$BASE/vnplayer_hook.rpe.py" "$BASE/vnshell"
 
 echo "=== explicit assertions (a listing above is not a check) ==="
 
@@ -47,6 +58,20 @@ grep -q "NoGameDirectory" "$BASE/main.py" || {
     exit 1
 }
 echo "OK: base/main.py is ours (contains NoGameDirectory)"
+
+# The hook is load-bearing and silent when absent: the app would build, install, launch
+# and run the shell perfectly, and only fail the moment a real game started -- with no
+# error, just a dead command channel. Exactly the kind of failure that costs a device
+# round-trip to discover, so assert it here.
+[ -f "$BASE/vnplayer_hook.rpe.py" ] || {
+    echo "ASSERT FAILED: $BASE/vnplayer_hook.rpe.py is missing -- imported games would have no command channel" >&2
+    exit 1
+}
+grep -q "attach_to_game" "$BASE/vnplayer_hook.rpe.py" || {
+    echo "ASSERT FAILED: the hook does not call attach_to_game; it would load and do nothing" >&2
+    exit 1
+}
+echo "OK: base/vnplayer_hook.rpe.py present and calls attach_to_game"
 
 [ -d "$BASE/vnshell" ] || { echo "ASSERT FAILED: $BASE/vnshell does not exist" >&2; exit 1; }
 # Derive the expected module list from the source of truth (shell/vnshell/) instead of
