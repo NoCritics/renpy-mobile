@@ -1,120 +1,101 @@
 # Where this project is
 
-**Read this first.** Last updated 2026-08-25, after an overnight M2 session.
+**Read this first.** Last updated 2026-08-25.
 
 ## In one paragraph
 
 VNPlayer is a free, open-source iOS player for Ren'Py 8 visual novels. Milestone B is
-done, merged, and released as **v0.1.0** with an unsigned `.ipa`. Milestone C's first
-half — the library and importer — is built and green on branch
-`milestone-c/library-and-import`, **not merged**. `main` is untouched at the Milestone B
-merge.
+merged and released as **v0.1.0**. **M2 (library and import) is done and device-confirmed**:
+a 1.2 GB commercial game imports from a `.zip`, launches, and is playable by touch on an
+iPhone 13 Pro Max. **M3 (in-game overlay) is implemented and green in CI but has never run
+on a device.** Everything lives on `milestone-c/library-and-import`; `main` is still at the
+Milestone B merge.
 
 ## The build to install
 
-**Run `32796474638`**, branch `milestone-c/library-and-import`.
-Artifact `VNPlayer-ipa`, 28,690,330 bytes. Install with Sideloadly as usual
-(`docs/INSTALL.md`).
+**Run `32840376120`**, branch `milestone-c/library-and-import`, artifact `VNPlayer-ipa`
+(28,725,459 bytes). Sideloadly as usual — `docs/INSTALL.md`.
 
-This is the first build that is meant to *do* something rather than prove something.
+## What to check, in order
 
-## What to check on the device, in order
+M3 is untested on hardware, so this is the first pass over it.
 
-1. **A library appears** — dark screen, "VNPlayer" heading, "Add game" button, and an
-   empty state explaining where games come from. If instead you see the old diagnostic
-   text with no library over it, the window did not install: look for
-   `[vnplayer] overlay ...` in the log.
-2. **Import a game.** Tap Add game, pick a Ren'Py 8 `.zip`. Progress should run, then the
-   game appears as a tile. If it refuses, **the message is the finding** — every
-   rejection has its own wording, so quote it verbatim.
-3. **Launch it.** Tap the tile. The library shows "Starting …", then hides itself and the
-   game should be there.
-4. **Does the game respond to taps?** This is the one thing the spike could not test, and
-   it is the highest-value observation in the list. The passthrough hit-test is written
-   but has never had a real game underneath it.
-5. **Read the top of the old diagnostic screen if you can still reach it** — it now
-   reports `virtual:`, `physical:` and `aspect preserved:`. See "Open questions" below.
+1. **Launch a game.** On the *first* game after installing, the overlay opens by itself
+   with a one-line hint — that is deliberate, so the handle is discoverable.
+2. **The handle.** A narrow tab on the right edge, vertically centred. Tapping it opens
+   the control strip. It should not interfere with playing.
+3. **Each control**: Roll back, Quick save, Quick load, Skip, Magnify, Back to library,
+   Close. Greyed-out controls are the engine saying it will not accept them right now —
+   that is the `engineState` event working, not a bug.
+4. **Refusal messages.** If a control does nothing, the strip should say why in a
+   sentence ("there is nothing to roll back to"). **A control that silently does nothing
+   is the finding** — quote what you saw.
+5. **Magnifier**: pinch/step the zoom, drag to pan, Done to exit. Two things to watch —
+   does the game still respond correctly *after* exiting, and does panning ever scroll the
+   dialogue backwards (it must not; that would mean touches are reaching SDL).
+6. **Back to library**, then launch again. Saves must survive.
 
-Capture the log with `bash scripts/ios/device_log.sh 30` — the summary no longer
-truncates, and prints `[N readable, M undecodable, T total]` so you can see what it hid.
+Log capture: `bash scripts/ios/device_log.sh 30`. Add `-a` to greps if it reports
+"binary file matches" — game output can contain non-UTF-8 bytes.
 
-## What was done overnight
+## Settled by measurement
 
-- **The sandbox denials are fixed.** `path_to_saves` and `path_to_logdir` now resolve to
-  the app's Data container via a new `vnshell.platform`, which detects iOS from
-  `RENPY_PLATFORM` — the same variable Ren'Py's own `renpy.ios` uses. Off iOS every
-  function returns its fallback unchanged, so the desktop behaviour Milestone A verified
-  over 200 switches is untouched.
-- **An M2 spec**, reviewed by Codex and Antigravity. The review reversed three of my
-  decisions and caught a design bug that was already written into the parent spec —
-  see below.
-- **`VNPlayerCore`**: extractor, hardening, library index, spool IPC, engine detection.
-  67 Swift tests, headless, running on the CI macOS runner in about a second.
-- **The library UI**, one window above SDL, with import, launch, and a launch handshake.
-- **The per-game command channel** — the thing that made M2 possible at all.
+- **Games are not cropped** on a 19.5:9 screen. A real game's bottom menu bar and centred
+  choices are fully visible. The earlier clipping was the old diagnostic screen's own
+  frame being taller than the display.
+- **Memory: ~8 MB per game switch**, against the desktop harness's 22 MB. With ~2.6 GB of
+  headroom that is on the order of 300 switches per session. **No design change needed**,
+  and the parent spec's rejection of a hard cap now rests on evidence. Warning threshold
+  is 500 MB of remaining headroom.
+- **Touch passthrough works** with a real game underneath.
 
-## Three findings worth carrying forward
+## Four findings worth carrying forward
 
-**Pausing SDL's `CADisplayLink` would have deadlocked the launch.** The parent spec §9
-says to pause it while the library is shown. SDL drives Ren'Py's frame execution from
-that callback, and the command spool is drained from a per-frame callback — so the launch
-command would never be read, and the app would hang with the library up and no error at
-all. It is not paused, and the invariant is now written down.
+**Never pause SDL's `CADisplayLink`.** The parent spec said to, while the library is up.
+SDL drives Ren'Py's frame execution from it and the command spool is drained per frame, so
+pausing means commands are never read — the app hangs with no error at all.
 
-**The `.rpyc` magic does not distinguish Ren'Py 7 from 8.** Both specs said it did. Both
-versions write `RENPY RPC2`. Implementing it as specified would have classified every
-game as Ren'Py 8 and let Ren'Py 7 games through to fail as the black screen the check
-exists to prevent. Real signals are `renpy/vc_version.py` and `lib/py3-` vs `lib/py2-`.
+**`UIHostingController`'s view answers every hit test itself.** A SwiftUI `Button` is not a
+separate `UIView`, so a passthrough window cannot tell "over a control" from "over empty
+space" by identity. Any control that must be tappable *while touches pass through* has to
+be a real UIKit view. This cost a round-trip and would have cost another in M3.
 
-**The command mailbox loses messages.** `FileTransport.receive()` reads then deletes, so
-anything written in between is destroyed unread. Replaced with a spool directory for the
-native bridge; `FileTransport` is unchanged and still serves the desktop harness.
+**The `.rpyc` magic does not distinguish Ren'Py 7 from 8.** Both write `RENPY RPC2`. Real
+signals are `renpy/vc_version.py` and `lib/py3-` vs `lib/py2-`.
 
-## Decisions taken without you, flagged for confirmation
+**Exception base classes are not what you would guess.** `RollbackException` and
+`UnfreezeException` derive from `BaseException`; `UtterRestartException` derives from
+`Exception`. So a blanket `except Exception` around command dispatch leaves rollback
+working and silently breaks quit-to-library. There is deliberately no such wrapper.
 
-1. **Vendored ZIPFoundation** (MIT, 21 files, in-repo) instead of hand-writing a ZIP
-   reader, reversing my own spec. Both reviewers said so independently and both my
-   arguments failed on inspection. `third_party/PROVENANCE.md` records the pin.
-2. **Deployment target raised 13.0 → 15.0.** A product decision, not a technical one: at
-   an iOS 13 floor SwiftUI has no `@StateObject`, `LazyVGrid`, or `.fileImporter`. 13.0
-   was inherited from renios, never chosen. Reverting costs a UI rewrite, nothing deeper.
-3. **`Documents/` is exposed to the Files app** — only `Games/` and `Saves/`. The index
-   and IPC files moved to `Library/Application Support/VNPlayer` so a curious tap cannot
-   break the control plane.
-4. **The Milestone B rule "the `shell/` layer ships unchanged" is lifted for M2.** Its
-   purpose was to force platform problems to be reported rather than patched around, and
-   it worked — the `path_to_saves` defect was reported. M2 is the milestone that acts on
-   those reports.
+## Decisions taken without you
 
-## Open questions
+1. **Vendored ZIPFoundation** rather than hand-writing a ZIP reader — reversing my own
+   spec after both reviewers disagreed with it. `third_party/PROVENANCE.md` has the pin.
+2. **Deployment target 13.0 → 15.0.** A product decision: at an iOS 13 floor SwiftUI has
+   no `@StateObject`, `LazyVGrid` or `.fileImporter`. Reverting costs a UI rewrite.
+3. **`Documents/` exposed to Files** — only `Games/` and `Saves/`; the index and IPC files
+   live in `Library/Application Support/VNPlayer`.
+4. **The M3 summon gesture is a handle, not an edge swipe** — you confirmed this one.
 
-- **Does Ren'Py crop 16:9 games on a 19.5:9 screen?** Measured indirectly: our UIKit
-  control centres correctly in a 1280×591 screen while Ren'Py's centred frame does not.
-  If the engine fills to width and overflows height rather than letterboxing, every game
-  loses the top and bottom of its screen — where dialogue boxes live. The diagnostic
-  screen now reports the numbers. **This is the most important thing to read in the
-  morning**, because it could make M2 unusable regardless of how well import works.
-- **Do touches outside the overlay reach the game?** Never tested with a real game
-  underneath. Step 4 above.
-- **Native memory growth**, ~22 MB per switch on desktop, still unmeasured on device.
-  Out of M2 by design.
+## Still open
 
-## Not done in M2
-
-Cover art extraction, re-import/update, export saves, rename, settings, and the in-game
-overlay (M3). The library has no way back from a running game yet except relaunching the
-app — `quitToLibrary` is implemented on both sides but has no button, because M3 owns the
-in-game overlay that would carry it.
+- M3 has no device testing at all yet.
+- **Cover art**, re-import/update, export saves, rename, settings: not built.
+- Ren'Py 7 support: refused with a message, by design.
+- `device_log.sh` should pass `-a` to grep; game output can be non-UTF-8 and the summary
+  currently warns "binary file matches".
 
 ## Layout
 
 ```
 shell/            the engine shell that ships inside the app (Python)
-  vnshell/        lifecycle, purge, transports, platform
+  vnshell/        lifecycle, purge, transports, platform, mailbox
   vnplayer_hook.rpe.py   loaded by Ren'Py for EVERY game; keeps the command channel alive
-swift/VNPlayerCore/    pure logic + vendored ZIPFoundation, tested headlessly
-spike/            the iOS app layer (windows, SwiftUI) and its XcodeGen project
+swift/VNPlayerCore/    pure logic + vendored ZIPFoundation, tested headlessly (87 tests)
+spike/            the iOS app layer (windows, SwiftUI, overlay) and its XcodeGen project
 scripts/ios/      fetch, generate, overlay, patch, package, device log
-docs/             IOS-BUILD.md (measured record), INSTALL.md (for the reader)
+tests/            Python suite (60 tests), including the protocol contract fixtures
+docs/superpowers/specs/   M2 and M3 designs, both consultation-reviewed
 harness/          desktop cycling rig
 ```
