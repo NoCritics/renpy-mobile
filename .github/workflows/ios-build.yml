@@ -3,7 +3,7 @@ name: iOS build
 on:
   workflow_dispatch:
   push:
-    branches: [main, milestone-b, 'spike/**', 'milestone-c/**']
+    branches: [main, milestone-b, 'spike/**', 'milestone-c/**', 'milestone-d/**']
     tags: ['v*']
 
 jobs:
