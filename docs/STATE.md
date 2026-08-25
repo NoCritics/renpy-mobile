@@ -7,32 +7,39 @@
 VNPlayer is a free, open-source iOS player for Ren'Py 8 visual novels. Milestone B is
 merged and released as **v0.1.0**. **M2 (library and import) is done and device-confirmed**:
 a 1.2 GB commercial game imports from a `.zip`, launches, and is playable by touch on an
-iPhone 13 Pro Max. **M3 (in-game overlay) is implemented and green in CI but has never run
-on a device.** Everything lives on `milestone-c/library-and-import`; `main` is still at the
+iPhone 13 Pro Max. **M3 (in-game overlay) is on a device and working** — roll back, skip and the
+control strip are confirmed; the three icons that open the game's own Save, Load and
+Preferences pages are built and green in CI but untested on hardware. Everything lives on `milestone-c/library-and-import`; `main` is still at the
 Milestone B merge.
 
 ## The build to install
 
-**Run `32849904189`**, branch `milestone-c/library-and-import`, artifact `VNPlayer-ipa`
-(28,725,821 bytes). Sideloadly as usual — `docs/INSTALL.md`.
+**Run `32852419754`**, branch `milestone-c/library-and-import`, artifact `VNPlayer-ipa`
+(28,733,222 bytes). Sideloadly as usual — `docs/INSTALL.md`.
 
 ## What to check, in order
 
-M3's first device pass found two bugs (both fixed, below). This build has the redesigned
-controls and has NOT been tested on hardware.
+Confirmed on device: roll back works, skip works, the strip looks right. The
+`renpy.exports` bugs are closed. **What has never run on hardware is the three new icons
+that open the game's own menu pages.**
 
-1. **Launch a game.** A column of icons should sit on the right edge: roll back, quick
-   save, quick load, skip, magnify, back to library. It fades to a quarter opacity after
-   four seconds and wakes when touched.
-2. **Roll back and Quick save should now be ENABLED** where the engine allows them. They
-   were permanently greyed before — that was the `renpy.exports` bug, not the engine
-   refusing.
-3. **Skip should no longer report an AttributeError.**
-4. **Roll back and Quick load actually work.** Both were previously guaranteed to throw
-   uncaught into Ren'Py's frame loop; neither had been tapped yet.
-5. **Refusal messages** appear as a caption beside the strip. A control that does nothing
-   and says nothing is the finding.
-6. **Magnifier**: zoom, pan, Done. Watch whether the game still responds correctly after
+1. **The strip now has nine icons in three groups**, separated by hairlines: roll back,
+   quick save, quick load, skip ┊ save, load, settings ┊ magnify, library. It is about
+   396pt tall against 428pt of landscape screen — if it feels cramped, quick load is the
+   one to drop, since the Load page covers it.
+2. **Save, Load and Settings open the game's OWN pages** — every slot with its
+   thumbnails, and the game's real preferences. Not ours.
+3. **Tapping a second one while a page is already open switches pages**, and a single
+   dismissal returns to the game. If it takes two dismissals, the in-menu branch is not
+   firing and it is stacking contexts.
+4. **On a menu page, roll back and skip go grey** (the new `inMenu` state), and quick
+   save is already greyed there by `canSave`.
+5. **Library from inside a menu page.** `quitToLibrary` raises through the nested menu
+   context. `call_in_new_context` pops in a `finally`, so it should unwind clean — but
+   that is reasoning, not evidence, and this is the check that turns it into evidence.
+6. **Preferences at a game's title screen** should work (Ren'Py allows it), and **Save
+   there should refuse in words** — "you cannot save from the main menu".
+7. **Magnifier**: zoom, pan, Done. Watch whether the game still responds correctly after
    exiting, and whether panning ever scrolls dialogue backwards (it must not).
 
 ## The bug worth remembering
@@ -96,9 +103,13 @@ working and silently breaks quit-to-library. There is deliberately no such wrapp
 
 ## Still open
 
-- The redesigned strip has not been on a device yet; items 1-6 above are its first pass.
+- The three menu icons have not been on a device; items 1-6 above are their first pass.
 - Whether the magnifier leaves SDL in a good state after exiting.
-- **Cover art**, re-import/update, export saves, rename, settings: not built.
+- **Cover art**, re-import/update, rename, app settings: not built.
+- **Export saves** deferred, by your call. Saves already sit in `Documents/Saves/<gameId>/`
+  and are visible in the Files app, so the manual route works today. The open question
+  that decides its urgency: **does a Sideloadly re-sign at the 7-day expiry preserve the
+  Data container, or wipe it?** Worth answering on the next expiry cycle.
 - Ren'Py 7 support: refused with a message, by design.
 - `device_log.sh` should pass `-a` to grep; game output can be non-UTF-8 and the summary
   currently warns "binary file matches".
@@ -109,10 +120,10 @@ working and silently breaks quit-to-library. There is deliberately no such wrapp
 shell/            the engine shell that ships inside the app (Python)
   vnshell/        lifecycle, purge, transports, platform, mailbox
   vnplayer_hook.rpe.py   loaded by Ren'Py for EVERY game; keeps the command channel alive
-swift/VNPlayerCore/    pure logic + vendored ZIPFoundation, tested headlessly (87 tests)
+swift/VNPlayerCore/    pure logic + vendored ZIPFoundation, tested headlessly (90 tests)
 spike/            the iOS app layer (windows, SwiftUI, overlay) and its XcodeGen project
 scripts/ios/      fetch, generate, overlay, patch, package, device log
-tests/            Python suite (60 tests), including the protocol contract fixtures
+tests/            Python suite (76 tests), including the protocol contract fixtures
 docs/superpowers/specs/   M2 and M3 designs, both consultation-reviewed
 harness/          desktop cycling rig
 ```
