@@ -152,15 +152,21 @@ jobs:
       - name: Make Ren'Py's log readable on device
         run: bash scripts/ios/enable_public_log.sh
 
-      # SPIKE (spike/swift-bridge branch only): replace Ren'Py's generated .xcodeproj
-      # with one XcodeGen builds, so Swift sources can be members of the target.
-      # Throwaway - this is a feasibility probe, not the eventual design.
-      - name: Install XcodeGen (spike)
-        if: startsWith(github.ref, 'refs/heads/spike/')
+      # Let the user get games in and saves out. Exposes Documents/ -- which by M2's
+      # design holds only Games/ and Saves/ -- while the library index and command
+      # spools stay in Library/Application Support where the Files app cannot reach them.
+      - name: Expose Documents to the Files app
+        if: ${{ startsWith(github.ref, 'refs/heads/spike/') || startsWith(github.ref, 'refs/heads/milestone-c/') }}
+        run: bash scripts/ios/patch_info_plist.sh
+
+      # Replace Ren'Py's generated .xcodeproj with one XcodeGen builds, so our Swift and
+      # ObjC sources can be members of the target. Proven on the spike branch, 2026-08-25.
+      - name: Install XcodeGen
+        if: ${{ startsWith(github.ref, 'refs/heads/spike/') || startsWith(github.ref, 'refs/heads/milestone-c/') }}
         run: brew install xcodegen && xcodegen --version
 
-      - name: Regenerate project with XcodeGen (spike)
-        if: startsWith(github.ref, 'refs/heads/spike/')
+      - name: Regenerate project with XcodeGen
+        if: ${{ startsWith(github.ref, 'refs/heads/spike/') || startsWith(github.ref, 'refs/heads/milestone-c/') }}
         run: bash spike/build_spike.sh
 
       - name: Inspect generated project

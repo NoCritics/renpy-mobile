@@ -18,6 +18,15 @@ command -v xcodegen >/dev/null 2>&1 || { echo "xcodegen not installed" >&2; exit
 rm -rf "$PROJDIR/vnspike"
 mkdir -p "$PROJDIR/vnspike"
 cp -R "$ROOT"/spike/Sources/. "$PROJDIR/vnspike/"
+
+# The pure-logic core and the vendored ZIP library, copied in as plain sources. They are
+# a SwiftPM package under swift/VNPlayerCore purely so `swift test` can exercise them
+# headlessly on a macOS runner; the app compiles the same files directly rather than
+# resolving a package, which would need network at build time.
+rm -rf "$PROJDIR/vncore" "$PROJDIR/vnzip"
+mkdir -p "$PROJDIR/vncore" "$PROJDIR/vnzip"
+cp -R "$ROOT"/swift/VNPlayerCore/Sources/VNPlayerCore/. "$PROJDIR/vncore/"
+cp -R "$ROOT"/swift/VNPlayerCore/Sources/ZIPFoundation/. "$PROJDIR/vnzip/"
 cp "$ROOT/spike/project.yml" "$PROJDIR/project.yml"
 
 # Assert the inputs project.yml names actually exist, rather than letting xcodebuild
@@ -34,8 +43,13 @@ done
 # This check extracts both sets and compares them. It also asserts each extraction
 # found something first, because a regex that silently matches nothing would make this
 # pass over any pair of files at all, including two empty ones.
-SWIFT_CODES="$(awk '/_cdecl\("vnspike_install_overlay"\)/{on=1} on{print} on&&/^}$/{exit}' "$ROOT/spike/Sources/SpikeOverlay.swift" | grep -oE 'return -?[0-9]+' | grep -oE '[-]?[0-9]+' | sort -n -u)"
-OBJC_CODES="$(grep -oE 'case -?[0-9]+:' "$ROOT/spike/Sources/VNSpikeBootstrap.m" | grep -oE '[-]?[0-9]+' | sort -n -u)"
+# The codes now live in the coordinator's install() method, which is indented, so the
+# range ends at a four-space-indented closing brace rather than a column-zero one. Left
+# as an explicit pattern rather than "read the whole file": a whole-file scan would also
+# pick up returns from unrelated methods and quietly turn this into a check of nothing
+# in particular.
+SWIFT_CODES="$(awk '/func install\(\) -> Int32/{on=1} on{print} on&&/^    }$/{exit}' "$ROOT/spike/Sources/VNPlayerCoordinator.swift" | grep -oE 'return -?[0-9]+' | grep -oE '[-]?[0-9]+' | sort -n -u)"
+OBJC_CODES="$(grep -oE 'case -?[0-9]+:' "$ROOT/spike/Sources/VNPlayerBootstrap.m" | grep -oE '[-]?[0-9]+' | sort -n -u)"
 
 SWIFT_N="$(echo "$SWIFT_CODES" | grep -c . || true)"
 OBJC_N="$(echo "$OBJC_CODES" | grep -c . || true)"

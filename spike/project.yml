@@ -13,7 +13,18 @@ name: VNPlayer
 options:
   bundleIdPrefix: io.github.nocritics
   deploymentTarget:
-    iOS: "13.0"
+    # RAISED from renios' own 13.0, deliberately, and this is a product decision worth
+    # confirming rather than a technical necessity.
+    #
+    # SwiftUI at an iOS 13 floor cannot use @StateObject, LazyVGrid, .fileImporter or
+    # .task -- all iOS 14/15 -- which means writing the library UI against UIKit
+    # collection views instead. iOS 15 shipped in 2021 and covers the iPhone 6s onward;
+    # a device older than that would not have the memory to run a Ren'Py game under an
+    # embedded CPython in any case, so the floor was costing real work to protect
+    # devices that cannot run this app.
+    #
+    # 13.0 was never a decision -- it was inherited verbatim from renios' prototype.
+    iOS: "15.0"
   createIntermediateGroups: true
   generateEmptyDirectories: true
 
@@ -41,8 +52,16 @@ targets:
       - path: LaunchImage-background.png
       - path: LaunchImage-foreground.png
 
-      # Ours.
+      # Ours: the app layer (windows, SwiftUI) ...
       - path: vnspike
+
+      # ... and the pure-logic core, compiled straight into the app target rather than
+      # linked as a SwiftPM package. The same files are a package under
+      # swift/VNPlayerCore so `swift test` can run them headlessly on a macOS runner
+      # with no simulator; making the Xcode project depend on SwiftPM resolution would
+      # need network at build time and undermine "builds identically on any fork".
+      - path: vncore
+      - path: vnzip
 
     dependencies:
       # MetalANGLE is a DYNAMIC framework -- renios embeds it via a Copy Files phase
@@ -62,6 +81,11 @@ targets:
       - sdk: GameController.framework
       - sdk: ImageIO.framework
       - sdk: QuartzCore.framework
+      # ZIPFoundation inflates ZIP method 8 through compression_stream. On Apple
+      # platforms COMPRESSION_ZLIB handles raw DEFLATE directly -- verified by reading
+      # the library rather than by trusting a review comment that claimed otherwise.
+      - sdk: libcompression.tbd
+      - sdk: UniformTypeIdentifiers.framework
 
     settings:
       base:
@@ -70,7 +94,6 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
 
         SWIFT_VERSION: "5.0"
-        SWIFT_OBJC_BRIDGING_HEADER: vnspike/VNSpike-Bridging-Header.h
         ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES: YES
         CLANG_ENABLE_MODULES: YES
 

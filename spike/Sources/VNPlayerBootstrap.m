@@ -1,6 +1,4 @@
-// THROWAWAY SPIKE CODE — not the eventual design.
-//
-// Installs the SwiftUI overlay without Python's involvement.
+// Installs the native window on first activation.
 //
 // The previous iteration installed it from Python via ctypes, which the device proved
 // impossible: ctypes.CDLL(None) cannot resolve any symbol in this binary, not even
@@ -13,12 +11,12 @@
 @import UIKit;
 
 // Implemented in Swift with @_cdecl. ObjC needs only the C declaration.
-extern int vnspike_install_overlay(void);
+extern int vnplayer_install_window(void);
 
-@interface VNSpikeBootstrap : NSObject
+@interface VNPlayerBootstrap : NSObject
 @end
 
-@implementation VNSpikeBootstrap
+@implementation VNPlayerBootstrap
 
 + (void)load {
     [[NSNotificationCenter defaultCenter]
@@ -38,29 +36,29 @@ extern int vnspike_install_overlay(void);
                     // The previous version of this file logged exactly that, and the
                     // first device run could not distinguish "installed but invisible"
                     // from "never installed".
-                    int rc = vnspike_install_overlay();
+                    int rc = vnplayer_install_window();
                     switch (rc) {
                         case 1:
-                            NSLog(@"[vnspike] overlay installed");
+                            NSLog(@"[vnplayer] overlay installed");
                             break;
                         case 2:
-                            NSLog(@"[vnspike] overlay already installed");
+                            NSLog(@"[vnplayer] overlay already installed");
                             break;
                         case -1:
-                            NSLog(@"[vnspike] overlay FAILED not main thread");
+                            NSLog(@"[vnplayer] overlay FAILED not main thread");
                             break;
                         case -2:
-                            NSLog(@"[vnspike] overlay FAILED no window scene");
+                            NSLog(@"[vnplayer] overlay FAILED no window scene");
                             break;
                         case -3:
-                            NSLog(@"[vnspike] overlay FAILED zero-size window");
+                            NSLog(@"[vnplayer] overlay FAILED zero-size window");
                             break;
                         default:
-                            NSLog(@"[vnspike] overlay FAILED unrecognised return code");
+                            NSLog(@"[vnplayer] overlay FAILED unrecognised return code");
                             break;
                     }
                 }];
-    NSLog(@"[vnspike] bootstrap registered");
+    NSLog(@"[vnplayer] bootstrap registered");
 }
 
 @end
