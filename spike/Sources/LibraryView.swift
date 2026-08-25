@@ -9,9 +9,7 @@ struct LibraryView: View {
     var body: some View {
         ZStack {
             if isHidden {
-                // Playing. The window stays installed but draws nothing, so every touch
-                // falls through PassthroughWindow.hitTest to the game underneath.
-                Color.clear
+                whilePlaying
             } else {
                 content
             }
@@ -29,6 +27,39 @@ struct LibraryView: View {
         } message: {
             Text(model.errorMessage ?? "")
         }
+    }
+
+    /// What the window shows while a game is running: nothing, plus one way back.
+    ///
+    /// `.allowsHitTesting(false)` on the filler is what actually lets touches reach the
+    /// game. Without it SwiftUI treats even `Color.clear` as hittable, the hosting view
+    /// answers every touch, and the game renders perfectly while receiving nothing --
+    /// which is exactly what the first build with a real game did.
+    ///
+    /// The corner button is deliberately small and deliberately in the extreme corner.
+    /// It is the only way back to the library until M3 builds the real in-game overlay,
+    /// and the alternative today is force-quitting the app. It does cost the game those
+    /// 44 points: a game with its own control in that exact corner will be unreachable
+    /// there, which is a real trade and worth revisiting when M3 lands a proper summon
+    /// gesture.
+    private var whilePlaying: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.clear
+                .allowsHitTesting(false)
+
+            Button {
+                model.returnToLibrary()
+            } label: {
+                Image(systemName: "books.vertical.fill")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.9))
+                    .frame(width: 44, height: 44)
+                    .background(Circle().fill(Color.black.opacity(0.4)))
+            }
+            .padding(.top, 6)
+            .padding(.trailing, 6)
+        }
+        .ignoresSafeArea()
     }
 
     private var isHidden: Bool {

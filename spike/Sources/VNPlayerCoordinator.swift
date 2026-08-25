@@ -52,6 +52,12 @@ public final class VNPlayerCoordinator {
         let root = VNPlayerRootViewController(model: model)
         window.rootViewController = root
 
+        // Assigning rootViewController does not load its view, and viewDidLoad runs
+        // before the view has a window -- so the controller cannot hand this over
+        // itself. Force the load, then wire it up here.
+        root.loadViewIfNeeded()
+        window.contentView = root.hostingView
+
         if window.frame.isEmpty { return -3 }
 
         window.isHidden = false
@@ -69,6 +75,11 @@ public final class VNPlayerCoordinator {
     /// needs SDL to have it back, because SDL reads input from the key window.
     func setLibraryVisible(_ visible: Bool) {
         guard let window else { return }
+
+        // Passthrough is only wanted while a game is running. With the library up the
+        // window is opaque and must absorb touches, or taps on empty library space would
+        // reach the game behind it.
+        window.passthroughEnabled = !visible
 
         if visible {
             window.makeKey()
@@ -89,9 +100,34 @@ public final class VNPlayerCoordinator {
 /// one left a correctly-installed, correctly-sized, entirely empty window. On device that
 /// presented as "the overlay does not work" while the log said it had installed fine.
 public final class PassthroughWindow: UIWindow {
+
+    /// While the library is up it is opaque and must absorb every touch. While a game is
+    /// running, only real controls may take touches and everything else has to fall
+    /// through to SDL.
+    public var passthroughEnabled = false
+
+    /// The `UIHostingController`'s view. Load-bearing: see below.
+    public weak var contentView: UIView?
+
     override public func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         guard let hit = super.hitTest(point, with: event) else { return nil }
-        return hit === rootViewController?.view ? nil : hit
+        guard passthroughEnabled else { return hit }
+
+        // Reject the two views that mean "empty space": the root view, and the SwiftUI
+        // HOSTING view.
+        //
+        // The hosting view is the part the first version missed, and it made the whole
+        // mechanism inert. It compared only against `rootViewController?.view` -- but
+        // that view has the hosting view as a full-size subview, so `super.hitTest`
+        // returns the HOSTING view, never the root. The comparison could not match, the
+        // window returned a hit for every touch, and a Ren'Py game rendered perfectly
+        // underneath while never receiving a single tap. A check that cannot fail again.
+        //
+        // Anything else that comes back is a real SwiftUI control, because the view tree
+        // marks its non-interactive regions with .allowsHitTesting(false).
+        if hit === rootViewController?.view { return nil }
+        if hit === contentView { return nil }
+        return hit
     }
 }
 
@@ -100,6 +136,7 @@ public final class PassthroughWindow: UIWindow {
 public final class VNPlayerRootViewController: UIViewController {
 
     private let model: LibraryModel
+    private(set) var hostingView: UIView?
 
     init(model: LibraryModel) {
         self.model = model
@@ -125,6 +162,11 @@ public final class VNPlayerRootViewController: UIViewController {
             host.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
         host.didMove(toParent: self)
+
+        // The window needs this to tell "empty space" from "a control" -- see
+        // PassthroughWindow.hitTest.
+        (view.window as? PassthroughWindow)?.contentView = host.view
+        hostingView = host.view
 
         model.presenter = self
     }
