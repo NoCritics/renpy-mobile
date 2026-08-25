@@ -1,5 +1,12 @@
 import Foundation
+
+// These sources build two ways: as a SwiftPM target (where ZIPFoundation is a separate
+// module and must be imported) and compiled directly into the iOS app target alongside
+// ZIPFoundation's own sources (where it is not a module at all, and importing it is an
+// error). canImport picks correctly in both, without a second copy of the file.
+#if canImport(ZIPFoundation)
 import ZIPFoundation
+#endif
 
 public struct SaveExportItem {
     public let gameId: String
@@ -68,6 +75,33 @@ public enum SaveExporter {
             throw SaveTransferError.writeFailed(name: destination.lastPathComponent)
         }
 
+        // `Archive(url:accessMode:.create)` writes a valid end-of-central-directory
+        // record immediately, and every `addEntry` below rewrites it in place. That means
+        // after the very first successful entry, `destination` is already a complete,
+        // openable ZIP -- just missing whatever hasn't been written yet. If anything
+        // after this point throws (a save file that can't be read, a disk that fills up
+        // mid-write), leaving that partial file behind would be the exact failure this
+        // function exists to prevent: a "backup" that looks fine and is missing games,
+        // the manifest, or the instructions note. So any throw from here on deletes the
+        // partial file before propagating, same as the upfront guard does for a
+        // pre-existing file at this path.
+        do {
+            return try write(items, kind: kind, appVersion: appVersion,
+                             now: now, into: archive)
+        } catch {
+            try? FileManager.default.removeItem(at: destination)
+            throw error
+        }
+    }
+
+    private static func write(
+        _ items: [SaveExportItem],
+        kind: SaveManifest.Kind,
+        appVersion: String,
+        now: Date,
+        into archive: Archive
+    ) throws -> SaveExportSummary {
+
         var manifestGames: [SaveManifest.Game] = []
         var count = 0
         var bytes: Int64 = 0
@@ -87,13 +121,17 @@ public enum SaveExporter {
                     throw SaveTransferError.writeFailed(name: name)
                 }
 
-                // .none: a .save is already a ZIP (loadsave.py:110). Deflating it again
-                // costs CPU on a phone and makes the result slightly bigger.
-                try archive.addEntry(with: "\(prefix)/\(name)", type: .file,
-                                     uncompressedSize: Int64(data.count),
-                                     compressionMethod: .none) { position, size in
-                    let start = Int(position)
-                    return data.subdata(in: start..<(start + size))
+                do {
+                    // .none: a .save is already a ZIP (loadsave.py:110). Deflating it
+                    // again costs CPU on a phone and makes the result slightly bigger.
+                    try archive.addEntry(with: "\(prefix)/\(name)", type: .file,
+                                         uncompressedSize: Int64(data.count),
+                                         compressionMethod: .none) { position, size in
+                        let start = Int(position)
+                        return data.subdata(in: start..<(start + size))
+                    }
+                } catch {
+                    throw SaveTransferError.writeFailed(name: name)
                 }
 
                 records.append(SaveManifest.File(name: name,

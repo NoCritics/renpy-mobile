@@ -112,6 +112,34 @@ final class SaveExporterTests: XCTestCase {
         }
     }
 
+    func testAFailedExportDoesNotLeaveAPartialZipBehind() throws {
+        // The first game's save is real and readable, so its entry -- and the archive's
+        // end-of-central-directory record -- gets written successfully before the second
+        // game is reached. A directory standing in for the second game's save file name
+        // parses as a valid save slot (so it isn't skipped by `saveFiles`) but cannot be
+        // read as `Data`, which fails the export partway through in a way that doesn't
+        // depend on file permissions or platform-specific tricks.
+        let good = try makeSaveDirectory(["1-1-LT1.save"])
+        let bad = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: bad, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: bad.appendingPathComponent("2-1-LT1.save"), withIntermediateDirectories: true)
+
+        let out = root.appendingPathComponent("out.zip")
+        XCTAssertThrowsError(
+            try SaveExporter.export(
+                [item(good, id: "alpha"), item(bad, id: "beta")],
+                kind: .backup, appVersion: "0.2.0", to: out, now: Date())
+        )
+
+        // Without cleanup, `out.zip` would already exist at this point -- a complete,
+        // openable archive holding alpha's save but missing beta's, the manifest, and
+        // the instructions note. That is a worse outcome than refusing outright, because
+        // it looks like a successful backup until someone actually needs it.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: out.path),
+                       "a failed export must not leave a partial zip behind")
+    }
+
     func testSaveFilesAreStoredNotDeflated() throws {
         // A .save is already a ZIP (loadsave.py:110). Deflating it again spends CPU on
         // a phone to make the file marginally larger.
