@@ -53,6 +53,18 @@ struct LibraryView: View {
                   primaryButton: .default(Text("Import")) { model.performSaveImport() },
                   secondaryButton: .cancel())
         }
+        .confirmationDialog(
+            "Which game are these saves for?",
+            isPresented: Binding(
+                get: { model.pendingGameChoice != nil },
+                set: { if !$0 { model.pendingGameChoice = nil } }),
+            titleVisibility: .visible
+        ) {
+            ForEach(model.pendingGameChoice?.candidates ?? []) { entry in
+                Button(entry.title) { model.chooseGame(entry) }
+            }
+            Button("Cancel", role: .cancel) { model.pendingGameChoice = nil }
+        }
     }
 
     /// While a game runs, the overlay owns the window. See OverlayView.
@@ -273,7 +285,7 @@ struct LibraryView: View {
                                 Label("Export saves", systemImage: "square.and.arrow.up")
                             }
                             Button {
-                                model.beginSaveImport()
+                                model.beginSaveImport(into: entry)
                             } label: {
                                 Label("Import saves", systemImage: "square.and.arrow.down")
                             }

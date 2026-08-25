@@ -60,6 +60,22 @@ final class LibraryModel: ObservableObject {
     @Published var pendingSaveImport: ImportConfirmation?
     @Published var showSaveImporter = false
 
+    struct GameChoice: Identifiable {
+        let id = UUID()
+        /// Held so the import can be re-planned once she picks.
+        let source: URL
+        let candidates: [LibraryEntry]
+    }
+
+    @Published var pendingGameChoice: GameChoice?
+
+    /// Set by a row-scoped "Import saves", so a foreign file (which cannot name its own
+    /// game) is imported into the row the reader tapped rather than guessed at or handed
+    /// to the chooser. Read once, synchronously, inside the `resolve` closure that
+    /// `SaveImporter.plan` calls from `handlePickedSave` -- see that method's `defer` for
+    /// why this is always nil again by the time anything else could read it.
+    private var importHint: LibraryEntry?
+
     var lastControlCommandId: String?
     var memoryWarningShown = false
     var commands: Spool? { commandSpool }
@@ -634,13 +650,20 @@ extension LibraryModel {
 
     // MARK: Save import
 
-    func beginSaveImport() {
+    func beginSaveImport(into hint: LibraryEntry? = nil) {
         guard !showSaveImporter else { return }
+        importHint = hint
         print("[vnspike] save import: opening")
         showSaveImporter = true
     }
 
     func handlePickedSave(_ result: Result<[URL], Error>) {
+        // This attempt's hint is spent the moment `resolve` below reads it, on every
+        // branch this function can take -- matched, unmatched (chooser/error), or a
+        // thrown error. Clearing it unconditionally on exit is what keeps a cancelled or
+        // failed import from leaving a stale hint for the next, unrelated import.
+        defer { importHint = nil }
+
         guard case .success(let urls) = result, let url = urls.first else { return }
         guard let paths else { return }
 
@@ -651,8 +674,13 @@ extension LibraryModel {
 
         do {
             let set = try SaveImporter.plan(source: url, resolve: { plan in
-                // §4.2: id first, then an exact single title match, then nothing.
-                let match = self.entries.first { $0.id == plan.gameId }
+                // A row-scoped import means "into this game", and a foreign file cannot
+                // name its own game, so the row IS the answer. Consulted before the
+                // id/title matches because those are structurally nil for a foreign plan
+                // and would fall through to a chooser the reader already answered by
+                // tapping a specific row.
+                let match = (plan.gameId == nil ? self.importHint : nil)
+                    ?? self.entries.first { $0.id == plan.gameId }
                     ?? self.entries.first { $0.title == plan.title }
                     ?? (plan.gameId == nil && self.entries.count == 1
                         ? self.entries[0] : nil)
@@ -663,10 +691,20 @@ extension LibraryModel {
             }, caps: .default)
 
             guard !set.plans.isEmpty else {
-                errorMessage = set.missingGames.isEmpty
-                    ? "There was nothing to import."
-                    : "These saves are for \(set.missingGames.joined(separator: ", ")), "
-                      + "which isn't installed."
+                // §4.2 case 3. A bare .save carries no id and no title, and a manifest
+                // can name a game installed here under a different id -- ids come from
+                // the archive's distribution root, so the same game from a differently
+                // named .zip legitimately differs. Refusing outright would strand the
+                // case this feature exists for.
+                if entries.isEmpty {
+                    errorMessage = "Add a game first, then import its saves."
+                } else if set.missingGames.isEmpty {
+                    pendingGameChoice = GameChoice(source: url, candidates: entries)
+                } else {
+                    errorMessage = "These saves are for "
+                        + "\(set.missingGames.joined(separator: ", ")), "
+                        + "which isn't installed."
+                }
                 return
             }
 
@@ -714,9 +752,82 @@ extension LibraryModel {
         return lines.joined(separator: " ")
     }
 
+    /// She picked a game for a save file that could not name one. Plan again, forcing
+    /// every save into that game's directory, then show the ordinary §4.5 sheet -- the
+    /// confirmation is not skipped just because a question preceded it.
+    func chooseGame(_ entry: LibraryEntry) {
+        guard let choice = pendingGameChoice, let paths else { return }
+        pendingGameChoice = nil
+        // Defensive, not load-bearing: this path never reads importHint (it answers
+        // §4.2 case 3 directly, from the chooser, not from a row), but nothing should
+        // carry a stale hint forward into whatever import happens next.
+        importHint = nil
+
+        let url = choice.source
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+
+        let directory = paths.saveDirectory(entry.id)
+
+        do {
+            let set = try SaveImporter.plan(source: url, resolve: { _ in directory },
+                                            caps: .default)
+            guard let plan = set.plans.first else {
+                errorMessage = "There was nothing to import."
+                return
+            }
+
+            let confirmation = ImportConfirmation(
+                message: "Import \(plan.addedCount) saves into \(entry.title)? "
+                    + (plan.newSlotCount > 0
+                        ? "\(plan.newSlotCount) go into new slots. " : "")
+                    + "Nothing will be replaced.",
+                warning: set.isForeign
+                    ? "This file didn't come from VNPlayer. Ren'Py saves can contain "
+                      + "code, so only open it if you trust where it came from."
+                    : nil,
+                source: url,
+                set: set,
+                destinations: [directory])
+
+            // Same lockstep invariant as performSaveImport's guard below -- checked here
+            // too because this is the other place an ImportConfirmation gets built by
+            // hand, from a freshly-made plan rather than the one handlePickedSave built.
+            guard confirmation.destinations.count == confirmation.set.plans.count else {
+                errorMessage = "Something went wrong preparing that import. Nothing was changed."
+                return
+            }
+
+            pendingSaveImport = confirmation
+        } catch let error as SaveTransferError {
+            errorMessage = error.userMessage
+        } catch let error as ImportError {
+            errorMessage = error.userMessage
+        } catch {
+            errorMessage = "That file could not be read."
+        }
+    }
+
     func performSaveImport() {
         guard let confirmation = pendingSaveImport else { return }
         pendingSaveImport = nil
+        // Defensive, not load-bearing: importHint is already nil by now on every path
+        // that reaches here (handlePickedSave clears it via `defer` before this
+        // confirmation ever exists; chooseGame clears it before building its own). A
+        // completed import must not leave it stale regardless, so this holds even if
+        // one of those clears is ever removed by a future edit.
+        importHint = nil
+
+        // These two arrays are paired by index, and the pairing is maintained by
+        // SaveImporter.plan calling `resolve` exactly once per appended plan. Nothing the
+        // compiler checks enforces that. If it ever stops holding, the failure is one
+        // game's saves written into another game's directory -- both paths valid, no
+        // error. Refusing loudly is the only acceptable way to be wrong here.
+        guard confirmation.destinations.count == confirmation.set.plans.count else {
+            errorMessage = "Something went wrong preparing that import. Nothing was changed."
+            pendingSaveImport = nil
+            return
+        }
 
         let scoped = confirmation.source.startAccessingSecurityScopedResource()
         defer { if scoped { confirmation.source.stopAccessingSecurityScopedResource() } }
