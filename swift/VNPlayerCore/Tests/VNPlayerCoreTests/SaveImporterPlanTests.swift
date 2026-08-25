@@ -309,6 +309,100 @@ final class SaveImporterPlanTests: XCTestCase {
         }
     }
 
+    // MARK: - I6: the discarded CRC and the EOF-is-not-an-error hole
+    //
+    // ZIPFoundation's closure-based `extract(_:bufferSize:skipCRC32:progress:consumer:)`
+    // RETURNS the CRC32 it computed while streaming rather than checking it against
+    // `entry.checksum` itself -- only the `extract(_:to:)` (file-URL) variant verifies.
+    // `plan()` used to discard that return value entirely (`_ = try archive.extract(...)`),
+    // so a corrupted or truncated entry was digested as whatever bytes happened to
+    // arrive. For an archive that carries our own manifest, `verifyDigests`'s sha256
+    // check still catches this downstream -- but spec §5's manifest-free case (a save
+    // folder zipped by hand on a desktop) has no manifest and therefore no sha256 to
+    // compare against, so the CRC check added directly in `plan()`'s extraction is the
+    // only thing standing between a damaged entry and her save directory.
+
+    /// Builds a manifest-free, stored (uncompressed) single-entry zip and then flips one
+    /// byte inside the entry's raw payload bytes on disk -- the exact technique
+    /// `generate_fixtures.py`'s `build_crc_corrupt` uses for `crc-corrupt.zip`, which is
+    /// shaped for the game-import path (a `Corrupt/` distribution root) and has no
+    /// save-slot-named entry `SaveImporter.plan` would ever look at, so it cannot be
+    /// reused here directly. Stored, not deflated, so the flip lands in the literal
+    /// payload rather than corrupting a deflate stream and failing for an unrelated
+    /// reason. The zip's own recorded CRC32 (written before the flip) then disagrees with
+    /// what streaming the post-flip bytes actually computes.
+    private func makeCRCCorruptManifestFreeZip(entryName: String = "1-1-LT1.save") throws -> URL {
+        let zip = root.appendingPathComponent("crc-corrupt-save-\(UUID().uuidString).zip")
+        let archive = try XCTUnwrap(try? Archive(url: zip, accessMode: .create))
+        let marker = Data(repeating: 0x41, count: 64)  // 64 'A' bytes, a findable run.
+        try archive.addEntry(with: entryName, type: .file,
+                             uncompressedSize: Int64(marker.count),
+                             compressionMethod: .none) { position, size in
+            marker.subdata(in: Int(position)..<(Int(position) + size))
+        }
+
+        // Manual scan rather than `firstRange(of:)`: that stdlib API needs macOS 13,
+        // above this package's macOS 11 floor (Package.swift).
+        var blob = [UInt8](try Data(contentsOf: zip))
+        let needle = [UInt8](marker)
+        var foundAt: Int?
+        if blob.count >= needle.count {
+            for start in 0...(blob.count - needle.count)
+            where Array(blob[start..<(start + needle.count)]) == needle {
+                foundAt = start
+                break
+            }
+        }
+        guard let index = foundAt else {
+            XCTFail("marker payload not found in freshly-written zip; test needs updating")
+            return zip
+        }
+        blob[index] = 0x42  // flip the first marker byte: 'A' -> 'B'
+        try Data(blob).write(to: zip)
+        return zip
+    }
+
+    func testACRCMismatchInAManifestFreeZipIsDamagedFile() throws {
+        // Hand-trace against the pre-fix code (`_ = try archive.extract(entry) { data
+        // .append($0) }`, no comparison against `entry.checksum`): ZIPFoundation's
+        // closure-based extract does not throw on a CRC mismatch by itself -- it only
+        // RETURNS the CRC it computed -- so that call reads the 64 (corrupted) bytes
+        // successfully, `data` ends up holding them, and since this zip carries no
+        // manifest, `verifyDigests` never runs (there is nothing to check the digest
+        // against). `plan()` returns a normal one-plan set with `addedCount == 1` and no
+        // error at all. `XCTAssertThrowsError` below would therefore fail with "did not
+        // throw" against that old code -- which is exactly the gap this test closes.
+        let zip = try makeCRCCorruptManifestFreeZip()
+
+        XCTAssertThrowsError(
+            try SaveImporter.plan(source: zip, resolve: alwaysResolve, caps: .default)
+        ) { error in
+            XCTAssertEqual(error as? SaveTransferError,
+                           .damagedFile(name: "1-1-LT1.save"))
+        }
+    }
+
+    func testAZeroByteSaveEntryIsRejectedNotCounted() throws {
+        // A zero-byte entry's CRC32 is trivially 0, and an entry genuinely declared as
+        // 0 bytes reads back as 0 bytes with no read error at all -- the CRC check above
+        // cannot catch this case (0 == 0), which is exactly why the empty-result guard
+        // exists as a separate check. Ren'Py never writes an empty .save (loadsave.py:110
+        // always writes a real zip), so this must be refused, not silently counted as
+        // one imported save.
+        let zip = root.appendingPathComponent("zero-byte.zip")
+        let archive = try XCTUnwrap(try? Archive(url: zip, accessMode: .create))
+        try archive.addEntry(with: "1-1-LT1.save", type: .file,
+                             uncompressedSize: 0,
+                             compressionMethod: .none) { _, _ in Data() }
+
+        XCTAssertThrowsError(
+            try SaveImporter.plan(source: zip, resolve: alwaysResolve, caps: .default)
+        ) { error in
+            XCTAssertEqual(error as? SaveTransferError,
+                           .damagedFile(name: "1-1-LT1.save"))
+        }
+    }
+
     func testATwoGameBackupKeepsEachGamesSavesUnderItsOwnPrefix() throws {
         // The ambiguity this field exists to remove: both games have a save named
         // 1-1-LT1.save, so a last-path-component match cannot tell them apart, and a

@@ -90,6 +90,11 @@ public enum SaveImporter {
             } catch {
                 throw SaveTransferError.damagedFile(name: source.lastPathComponent)
             }
+            // A Ren'Py save is a non-empty zip; a bare .save that reads as zero bytes is
+            // damage, not a valid (if minimal) save.
+            guard !data.isEmpty else {
+                throw SaveTransferError.damagedFile(name: source.lastPathComponent)
+            }
             let plan = build(gameId: nil, title: nil, isForeign: true,
                              incoming: [(source.lastPathComponent, SaveDigest.sha256(of: data))],
                              directory: directory, sourcePrefix: "")
@@ -172,9 +177,29 @@ public enum SaveImporter {
             }
 
             var data = Data()
+            let checksum: CRC32
             do {
-                _ = try archive.extract(entry) { data.append($0) }
+                checksum = try archive.extract(entry) { data.append($0) }
             } catch {
+                throw SaveTransferError.damagedFile(name: name)
+            }
+
+            // ZIPFoundation's closure-based extract RETURNS the CRC rather than checking
+            // it -- only the extract(_:to:) variant verifies. Discarding it means a
+            // corrupted or truncated save is digested (and, in apply(), written) exactly
+            // as-is, and for a manifest-free zip (spec §5's "zip a desktop save folder
+            // yourself") there is no manifest sha256 to catch it either -- this is the
+            // only check standing between the archive and her save directory.
+            // ArchiveImporter.swift:284 does the same comparison for the same reason.
+            if checksum != entry.checksum {
+                throw SaveTransferError.damagedFile(name: name)
+            }
+
+            // A Ren'Py save is itself a non-empty zip (loadsave.py:110) -- never zero
+            // bytes. EOF is not a read error in ZIPFoundation's fread-based reader, so a
+            // read that stops short can finish without throwing at all; this is what
+            // closes that hole for an entry that reads as empty.
+            guard !data.isEmpty else {
                 throw SaveTransferError.damagedFile(name: name)
             }
 
@@ -401,12 +426,30 @@ extension SaveImporter {
                     throw SaveTransferError.damagedFile(name: placement.sourceName)
                 }
                 var buffer = Data()
+                let checksum: CRC32
                 do {
-                    _ = try archive.extract(entry) { buffer.append($0) }
+                    checksum = try archive.extract(entry) { buffer.append($0) }
                 } catch {
-                    // I6: `try?` here used to discard a CRC mismatch and write the empty
-                    // buffer as the save, counted as added and reported as success. A
-                    // zero-byte save file is never a correct outcome.
+                    // I6: `try?` here used to discard a thrown extraction error and write
+                    // the empty buffer as the save, counted as added and reported as
+                    // success.
+                    throw SaveTransferError.damagedFile(name: placement.sourceName)
+                }
+
+                // ZIPFoundation's closure-based extract RETURNS the CRC rather than
+                // checking it -- discarding it (as `_ = try archive.extract(...)` used to
+                // do here) means a corrupted or truncated save is written as whatever
+                // bytes arrived and still counted as added. Mirrors ArchiveImporter.swift
+                // :284's comparison, and closes the same manifest-free-zip gap plan()'s
+                // own extract now closes above.
+                if checksum != entry.checksum {
+                    throw SaveTransferError.damagedFile(name: placement.sourceName)
+                }
+
+                // EOF is not a read error in ZIPFoundation's fread-based reader, so a
+                // short read can finish without throwing. A Ren'Py save is never zero
+                // bytes, so an empty result here is damage, not a valid save.
+                guard !buffer.isEmpty else {
                     throw SaveTransferError.damagedFile(name: placement.sourceName)
                 }
                 data = buffer
@@ -421,6 +464,9 @@ extension SaveImporter {
                 do {
                     data = try Data(contentsOf: source)
                 } catch {
+                    throw SaveTransferError.damagedFile(name: placement.sourceName)
+                }
+                guard !data.isEmpty else {
                     throw SaveTransferError.damagedFile(name: placement.sourceName)
                 }
             }

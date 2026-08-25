@@ -608,13 +608,16 @@ extension LibraryModel {
         guard let confirmation = pendingExport, let paths else { return }
         pendingExport = nil
 
-        // A previous export not yet picked up by the share sheet (or left behind by a
-        // force-quit) would otherwise sit in paths.imports forever -- see
-        // `cleanStaleExports`. Clearing it here as well means a session that exports
-        // several times in a row never accumulates more than the one file in flight.
-        if let previous = shareURL {
-            try? FileManager.default.removeItem(at: previous)
-        }
+        // This used to also delete a previous, not-yet-picked-up `shareURL` here, on the
+        // same reasoning I7 already reversed for `dismissShare()`: a share sheet the
+        // reader has not dismissed yet (or handed to AirDrop/Save-to-Files, which can
+        // keep reading asynchronously after it visibly closes) may still be consuming
+        // that file. Exporting game B while game A's share sheet for a previous export is
+        // still up -- or still being read by an activity -- must not delete A's file out
+        // from under it. `cleanStaleExports()` already sweeps `paths.imports` at every
+        // launch, so it owns this file's lifetime too; the cost is that a session which
+        // exports several times in a row can leave more than one file sitting there until
+        // the next launch, which is the safe direction to be wrong in.
 
         let stamp = ISO8601DateFormatter()
         stamp.formatOptions = [.withYear, .withMonth, .withDay, .withDashSeparatorInDate]
