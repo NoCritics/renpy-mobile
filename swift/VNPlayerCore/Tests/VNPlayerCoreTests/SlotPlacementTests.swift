@@ -25,11 +25,23 @@ final class SlotPlacementTests: XCTestCase {
         XCTAssertEqual(quick.number, 3)
     }
 
+    func testAPageNameContainingADashStillSplitsOnTheFinalDash() {
+        // The discriminating case. Every other fixture in this file has exactly one dash
+        // after the suffix is stripped, so firstIndex and lastIndex agree on all of them
+        // and neither would fail if the rule were inverted. This one diverges:
+        //   lastIndex  -> page "extra-1", number 2   (correct)
+        //   firstIndex -> page "extra", number "1-2" -> Int(...) fails -> nil
+        let slot = SaveSlot(fileName: "extra-1-2-LT1.save")
+        XCTAssertNotNil(slot, "splitting on the FIRST dash makes this unparseable")
+        XCTAssertEqual(slot?.page, "extra-1")
+        XCTAssertEqual(slot?.number, 2)
+    }
+
     func testRejectsAnythingThatIsNotASaveFile() {
         XCTAssertNil(SaveSlot(fileName: "3-2.save"))          // wrong suffix
         XCTAssertNil(SaveSlot(fileName: "persistent"))
         XCTAssertNil(SaveSlot(fileName: "-LT1.save"))         // no slot name
-        XCTAssertNil(SaveSlot(fileName: "nodash-LT1.save"))   // no number
+        XCTAssertNil(SaveSlot(fileName: "nodash-LT1.save"))   // no dash, so no page/number split
         XCTAssertNil(SaveSlot(fileName: "3-x-LT1.save"))      // number is not a number
     }
 
