@@ -118,7 +118,13 @@ public enum SaveExporter {
                 do {
                     data = try Data(contentsOf: url)
                 } catch {
-                    throw SaveTransferError.writeFailed(name: name)
+                    // Minor: this is a READ failure -- the local save file could not be
+                    // opened -- not a write failure, so `.writeFailed`'s "The device may
+                    // be out of space" was the wrong cause and the wrong remedy.
+                    // `.damagedFile` names the right thing and its sentence ("try
+                    // exporting it again") is the right suggestion for a source file that
+                    // could not be read.
+                    throw SaveTransferError.damagedFile(name: name)
                 }
 
                 do {

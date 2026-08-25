@@ -14,8 +14,8 @@ on `milestone-d/save-transfer`; `main` is still at the Milestone B merge.
 
 ## The build to install
 
-**Run `32882242679`**, branch `milestone-d/save-transfer`, artifact `VNPlayer-ipa`
-(28,811,045 bytes). Sideloadly as usual — `docs/INSTALL.md`.
+**Run `32883536254`**, branch `milestone-d/save-transfer`, artifact `VNPlayer-ipa`
+(28,811,101 bytes). Sideloadly as usual — `docs/INSTALL.md`.
 
 ## What M4 added
 
@@ -44,11 +44,14 @@ before it.
    to fully finish on the receiving end before judging it.
    - *Baseline:* unzip the AirDropped file into the folder named inside its own
      `WHERE-TO-PUT-THESE.txt`. The desktop game should then list those same save slots.
-   - *Extra care needed here:* the app deletes its own temporary copy of the export the
-     moment you dismiss the share sheet — not when the transfer has actually finished.
-     AirDrop and iCloud both keep copying in the background after that sheet closes. If
-     the app deleted its copy too soon, what arrives on the other end will be cut short or
-     empty, not a complete file. Check that both destinations arrive whole.
+   - *Note:* this was flagged in review and fixed before merge. The app used to delete its
+     own temporary copy of the export the moment you dismiss the share sheet — not when
+     the transfer had actually finished — and AirDrop and iCloud both keep copying in the
+     background after that sheet closes, so a too-early delete could have truncated the
+     file. It no longer deletes on dismiss; a startup sweep removes the temporary copy on
+     the next launch instead. Still worth checking on device: both destinations should
+     arrive whole, and the temporary file should be gone after relaunching the app once
+     the transfer is well clear.
 2. **Export a game that has never been launched**, so it has no saves at all. This should
    be refused with a plain sentence explaining why. It must not hand you an empty `.zip`
    file as if that were a normal export — an empty file that *looks* successful is the
