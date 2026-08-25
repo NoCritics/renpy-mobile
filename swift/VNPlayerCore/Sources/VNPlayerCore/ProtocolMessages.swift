@@ -25,6 +25,7 @@ public enum ProtocolMessages {
         public static let screen = "screen"
         public static let event = "event"
         public static let reason = "reason"
+        public static let saveDirectory = "saveDirectory"
     }
 
     public enum CommandName {
@@ -128,5 +129,16 @@ public enum ProtocolMessages {
     public static func parseEvent(_ payload: [String: Any]) -> (name: String, commandId: String?)? {
         guard let name = payload[Key.event] as? String else { return nil }
         return (name, payload[Key.commandId] as? String)
+    }
+
+    /// The game's `config.save_directory` from a `gameReady` event.
+    ///
+    /// Absent, null and empty all read as nil, because all three mean the same thing to
+    /// the export note: this game has no save-folder name of its own.
+    public static func gameReadySaveDirectory(_ payload: [String: Any]) -> String? {
+        guard let value = payload[Key.saveDirectory] as? String, !value.isEmpty else {
+            return nil
+        }
+        return value
     }
 }

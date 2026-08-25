@@ -12,6 +12,10 @@ public struct LibraryEntry: Codable, Equatable, Identifiable {
     public var importedComplete: Bool
     /// Incremented when a launch of this game killed the process. See §10.5.
     public var crashCount: Int
+    /// The game's `config.save_directory`, learned from `gameReady` the first time it
+    /// runs. Optional and defaulted because a `library.json` written before this field
+    /// existed must still decode -- a non-optional here would lose the whole library.
+    public var saveDirectory: String?
 
     public init(
         id: String,
@@ -22,7 +26,8 @@ public struct LibraryEntry: Codable, Equatable, Identifiable {
         lastPlayedAt: Date? = nil,
         detectedEngine: DetectedEngine = .unknown,
         importedComplete: Bool = false,
-        crashCount: Int = 0
+        crashCount: Int = 0,
+        saveDirectory: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -33,6 +38,7 @@ public struct LibraryEntry: Codable, Equatable, Identifiable {
         self.detectedEngine = detectedEngine
         self.importedComplete = importedComplete
         self.crashCount = crashCount
+        self.saveDirectory = saveDirectory
     }
 }
 
