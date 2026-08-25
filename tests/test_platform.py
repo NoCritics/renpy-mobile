@@ -137,7 +137,11 @@ class PathToSavesTests(EnvIsolated):
             result = vnmain.path_to_saves(bundle_gamedir)
 
             self.assertFalse(result.startswith(bundle_gamedir))
-            self.assertEqual(result, os.path.join(tmp, "saves"))
+            # Not Documents any more, and not by accident: the library screen is a Ren'Py
+            # project that autosaves, so its own save files were piling up in the folder
+            # the reader browses, mixed in with her real ones.
+            self.assertEqual(
+                result, os.path.join(tmp, "Application Support", "shell-saves"))
             self.assertTrue(os.path.isdir(result))
 
 
@@ -160,3 +164,57 @@ class PathToLogdirTests(EnvIsolated):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+class ShellSaveFallbackTests(EnvIsolated):
+    """Where saves go when there is no game -- i.e. the library screen itself.
+
+    The library screen is a Ren'Py project like any other, so it inherits Ren'Py's
+    defaults, including ``autosave_slots = 10`` (renpy/config.py:328). It writes save
+    files whether or not anyone wants them. Observed on device: auto-1, auto-2, 1-1 and
+    _reload-1 loose in Documents beside Games/ and Saves/, among the reader's real saves
+    and distinguishable only by being smaller.
+
+    Documents is exposed to the Files app deliberately -- the right home for her games
+    and saves, and the wrong home for ours.
+    """
+
+    def test_the_no_game_fallback_stays_out_of_documents_on_ios(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            STATE.saves_root = ""
+            STATE.current_game_id = None
+            os.environ["RENPY_PLATFORM"] = "ios-arm64"
+            os.environ["VNPLAYER_DATA_ROOT"] = tmp
+
+            result = vnmain.path_to_saves("/var/containers/.../base/game")
+
+            self.assertNotIn(
+                "Documents", result.replace("\\", "/").split("/"),
+                f"the library screen's saves land where the reader browses: {result}")
+
+    def test_a_real_game_is_unaffected(self):
+        # The guard that keeps this change honest: moving the no-game fallback must not
+        # move a game's actual saves, which stay per-game under the exposed Saves root.
+        with tempfile.TemporaryDirectory() as tmp:
+            STATE.saves_root = os.path.join(tmp, "Saves")
+            STATE.current_game_id = "bigbaddogs"
+            os.environ["RENPY_PLATFORM"] = "ios-arm64"
+            os.environ["VNPLAYER_DATA_ROOT"] = tmp
+
+            result = vnmain.path_to_saves("/var/containers/.../base/game")
+
+            self.assertEqual(result, os.path.join(tmp, "Saves", "bigbaddogs"))
+
+    def test_off_ios_the_fallback_is_unchanged(self):
+        # The desktop cycling harness validated 200 game switches against <gamedir>/saves.
+        # Nothing about the iOS layout may move it.
+        with tempfile.TemporaryDirectory() as tmp:
+            STATE.saves_root = ""
+            STATE.current_game_id = None
+            os.environ.pop("RENPY_PLATFORM", None)
+            os.environ.pop("VNPLAYER_DATA_ROOT", None)
+
+            gamedir = os.path.join(tmp, "base", "game")
+            self.assertEqual(vnmain.path_to_saves(gamedir),
+                             os.path.join(gamedir, "saves"))

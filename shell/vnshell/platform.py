@@ -67,6 +67,35 @@ def data_root(fallback: str) -> str:
     return fallback
 
 
+def support_root(fallback: str) -> str:
+    """Return a directory for files the reader should never see.
+
+    Distinct from `data_root` on purpose. On iOS `data_root` is ``~/Documents``, which is
+    exposed to the Files app -- by design, so games and saves can be reached by hand. But
+    that makes it the wrong home for anything that is not the reader's own content: the
+    command spool, the library index, and the shell project's own save files all landed
+    there or beside it and looked to her like clutter she was not supposed to touch.
+
+    Must agree with `VNPlayerPaths.applicationSupport` in Swift, which owns the other
+    half of this contract.
+
+    Honours ``VNPLAYER_DATA_ROOT`` for the same reason `data_root` does, and the omission
+    was caught the hard way: without it a test that merely claims to be iOS writes into
+    the real `~/Library`, which is neither hermetic nor polite.
+    """
+
+    override = os.environ.get(_DATA_ROOT_ENV)
+    if override:
+        return os.path.join(override, "Application Support")
+
+    if is_ios():
+        return os.path.join(
+            os.path.expanduser("~"), "Library", "Application Support", "VNPlayer"
+        )
+
+    return fallback
+
+
 def ensure_dir(path: str) -> str:
     """Create ``path`` if absent and return it.
 

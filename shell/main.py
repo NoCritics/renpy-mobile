@@ -64,6 +64,20 @@ def path_to_saves(gamedir: str, save_directory: str | None = None) -> str:
     # read-only app bundle: the sandbox denied it on every launch
     # (deny(1) file-write-create .../base/game/saves). On desktop <gamedir>/saves is
     # correct and stays, because data_root() returns its fallback unchanged off-iOS.
+    #
+    # On iOS it must not be under Documents either, which is where it went next. The
+    # library screen is itself a Ren'Py project and inherits Ren'Py's defaults, including
+    # ten rotating autosave slots -- so its own save files piled up loose in the folder
+    # the reader browses, mixed in among the per-game directories and indistinguishable
+    # from her real saves except by being smaller. Observed on device: auto-1, auto-2,
+    # 1-1 and _reload-1 sitting beside Games/ and Saves/.
+    #
+    # Nothing written through this branch is ever the reader's data.
+    if platform.is_ios():
+        return platform.ensure_dir(
+            os.path.join(platform.support_root(gamedir), "shell-saves")
+        )
+
     return platform.ensure_dir(
         os.path.join(platform.data_root(gamedir), "saves")
     )
