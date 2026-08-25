@@ -265,6 +265,41 @@ final class SaveImporterPlanTests: XCTestCase {
         }
     }
 
+    func testADuplicateNameInTheManifestIsRefusedNotACrash() throws {
+        // Dictionary(uniqueKeysWithValues:) TRAPS on a duplicate key. `expected` in
+        // `verifyDigests` is built from the manifest inside a file the reader chose to
+        // open, so a hand-edited manifest naming the same file twice must be refused
+        // cleanly -- not crash the whole app. There is no way to "catch" a trap in
+        // Swift, so this test's real assertion is that calling `plan` here returns or
+        // throws at all rather than aborting the process.
+        let source = try makeExport(names: ["1-1-LT1.save"])
+
+        let archive = try XCTUnwrap(try? Archive(url: source, accessMode: .update))
+        let manifestEntry = try XCTUnwrap(archive[SaveManifest.fileName])
+        var manifestData = Data()
+        _ = try? archive.extract(manifestEntry) { manifestData.append($0) }
+        var manifest = try SaveManifest.decode(manifestData)
+        // Duplicate the one file entry under the same name -- the manifest now lists
+        // "1-1-LT1.save" twice for the same game.
+        manifest.games[0].files.append(manifest.games[0].files[0])
+        let newManifestData = try SaveManifest.encode(manifest)
+
+        try archive.remove(manifestEntry)
+        try archive.addEntry(with: SaveManifest.fileName, type: .file,
+                             uncompressedSize: Int64(newManifestData.count),
+                             compressionMethod: .deflate) { position, size in
+            newManifestData.subdata(in: Int(position)..<(Int(position) + size))
+        }
+
+        // Must not trap. Either a plan comes back, or a SaveTransferError is thrown --
+        // anything else (including process death) is the bug this test exists to catch.
+        do {
+            _ = try SaveImporter.plan(source: source, resolve: alwaysResolve, caps: .default)
+        } catch is SaveTransferError {
+            // Refused cleanly. Also acceptable.
+        }
+    }
+
     /// Replace one entry's bytes so its digest no longer matches the manifest.
     private func corrupt(entry path: String, in zip: URL) throws {
         let archive = try XCTUnwrap(try? Archive(url: zip, accessMode: .update))

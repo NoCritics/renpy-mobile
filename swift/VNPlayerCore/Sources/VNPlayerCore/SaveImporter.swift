@@ -214,8 +214,12 @@ public enum SaveImporter {
         _ incoming: [(name: String, digest: String)],
         against game: SaveManifest.Game
     ) throws {
-        let expected = Dictionary(uniqueKeysWithValues:
-            game.files.map { ($0.name, $0.sha256) })
+        // uniquingKeysWith, not uniqueKeysWithValues: the latter TRAPS on a duplicate key,
+        // and this dictionary is built from a file the reader picked. A hand-edited
+        // manifest naming the same file twice would crash the app rather than be refused.
+        // Last one wins; the reverse pass below still catches anything the archive lacks.
+        let expected = Dictionary(game.files.map { ($0.name, $0.sha256) },
+                                  uniquingKeysWith: { _, second in second })
 
         for file in incoming {
             guard let want = expected[file.name] else {
@@ -277,5 +281,117 @@ public enum SaveImporter {
             placements: SlotPlacement.place(incoming: toPlace, existing: existingNames),
             alreadyPresent: alreadyPresent,
             sourcePrefix: sourcePrefix)
+    }
+}
+
+public struct SaveImportResult: Equatable {
+    public let added: Int
+    public let movedToNewSlot: Int
+    public let skipped: Int
+    /// What to show the reader afterwards, in the same terms the confirmation used.
+    public let sentence: String
+
+    public init(added: Int, movedToNewSlot: Int, skipped: Int, sentence: String) {
+        self.added = added
+        self.movedToNewSlot = movedToNewSlot
+        self.skipped = skipped
+        self.sentence = sentence
+    }
+}
+
+extension SaveImporter {
+
+    /// Execute exactly the plan, and nothing else.
+    ///
+    /// The counts it returns must equal the counts the plan predicted, because the
+    /// confirmation sheet showed those numbers before the reader agreed. That equality
+    /// is asserted in `SaveImporterApplyTests.testTheResultMatchesThePlanExactly`.
+    public static func apply(
+        _ plan: SaveImportPlan,
+        source: URL,
+        into directory: URL
+    ) throws -> SaveImportResult {
+
+        try? FileManager.default.createDirectory(at: directory,
+                                                 withIntermediateDirectories: true)
+
+        // A bare .save has no archive to read from.
+        let archive = (SaveSlot(fileName: source.lastPathComponent) != nil)
+            ? nil
+            : try? Archive(url: source, accessMode: .read)
+
+        if archive == nil, SaveSlot(fileName: source.lastPathComponent) == nil {
+            throw SaveTransferError.cannotOpenArchive
+        }
+
+        var moved = 0
+
+        for placement in plan.placements {
+            let data: Data
+
+            if let archive {
+                // Exact path first. A last-component match is ambiguous in a backup --
+                // games/alpha/1-1-LT1.save and games/beta/1-1-LT1.save share their last
+                // component -- so matching by name alone can file one game's save into
+                // another game's directory without erroring.
+                let path = plan.sourcePrefix.isEmpty
+                    ? placement.sourceName
+                    : "\(plan.sourcePrefix)/\(placement.sourceName)"
+
+                // The fallback covers a hand-made archive whose entries for one game sit
+                // at differing depths, where a single recorded prefix cannot describe them
+                // all. It is safe here precisely because a plan maps to ONE destination
+                // game: the worst a name match can do inside a single group is pick the
+                // wrong one of that game's own files.
+                guard let entry = archive[path] ?? archive.first(where: {
+                    ($0.path as NSString).lastPathComponent == placement.sourceName
+                }) else {
+                    throw SaveTransferError.damagedFile(name: placement.sourceName)
+                }
+                var buffer = Data()
+                _ = try? archive.extract(entry) { buffer.append($0) }
+                data = buffer
+            } else {
+                data = (try? Data(contentsOf: source)) ?? Data()
+            }
+
+            let target = directory.appendingPathComponent(placement.destination.fileName)
+
+            // Belt and braces. SlotPlacement guarantees this path is free; if a bug ever
+            // made it otherwise, refusing is the only acceptable behaviour.
+            guard !FileManager.default.fileExists(atPath: target.path) else {
+                throw SaveTransferError.writeFailed(name: placement.destination.fileName)
+            }
+
+            do {
+                try data.write(to: target, options: .withoutOverwriting)
+            } catch {
+                throw SaveTransferError.writeFailed(name: placement.destination.fileName)
+            }
+
+            if placement.movedToNewSlot { moved += 1 }
+        }
+
+        return SaveImportResult(
+            added: plan.placements.count,
+            movedToNewSlot: moved,
+            skipped: plan.alreadyPresent.count,
+            sentence: sentence(added: plan.placements.count,
+                               moved: moved,
+                               skipped: plan.alreadyPresent.count))
+    }
+
+    static func sentence(added: Int, moved: Int, skipped: Int) -> String {
+        if added == 0 && skipped > 0 {
+            return "Those saves are already here. Nothing changed."
+        }
+        if added == 0 {
+            return "There was nothing to add."
+        }
+
+        var text = added == 1 ? "1 save added" : "\(added) saves added"
+        if moved > 0 { text += ", \(moved) placed in new slots" }
+        if skipped > 0 { text += ", \(skipped) already here" }
+        return text + "."
     }
 }
