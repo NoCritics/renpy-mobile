@@ -27,6 +27,18 @@ struct LibraryView: View {
         } message: {
             Text(model.errorMessage ?? "")
         }
+        .alert(item: $model.pendingExport) { confirmation in
+            Alert(title: Text(confirmation.title),
+                  message: Text(confirmation.message),
+                  primaryButton: .default(Text("Export")) { model.performExport() },
+                  secondaryButton: .cancel())
+        }
+        .sheet(isPresented: Binding(
+            get: { model.shareURL != nil },
+            set: { if !$0 { model.dismissShare() } })
+        ) {
+            if let url = model.shareURL { ShareSheet(url: url) }
+        }
     }
 
     /// While a game runs, the overlay owns the window. See OverlayView.
@@ -109,6 +121,14 @@ struct LibraryView: View {
             Spacer()
 
             if case .idle = model.phase {
+                Button {
+                    model.confirmExport(nil)          // nil means every game
+                } label: {
+                    Label("Back up saves", systemImage: "arrow.up.doc.on.clipboard")
+                        .font(.system(size: 17, weight: .semibold))
+                }
+                .buttonStyle(.bordered)
+
                 Button {
                     model.beginImport()
                 } label: {
@@ -230,6 +250,11 @@ struct LibraryView: View {
                 ForEach(model.entries) { entry in
                     GameTile(entry: entry) { model.launch(entry) }
                         .contextMenu {
+                            Button {
+                                model.confirmExport(entry)
+                            } label: {
+                                Label("Export saves", systemImage: "square.and.arrow.up")
+                            }
                             Button(role: .destructive) {
                                 model.delete(entry, includingSaves: false)
                             } label: {

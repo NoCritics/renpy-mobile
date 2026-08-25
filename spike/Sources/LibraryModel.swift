@@ -37,6 +37,17 @@ final class LibraryModel: ObservableObject {
     @Published var magnification: CGFloat = 1
     @Published var magnifyOffset: CGSize = .zero
 
+    struct ExportConfirmation: Identifiable {
+        let id = UUID()
+        let title: String
+        let message: String
+        let items: [SaveExportItem]
+        let kind: SaveManifest.Kind
+    }
+
+    @Published var pendingExport: ExportConfirmation?
+    @Published var shareURL: URL?
+
     var lastControlCommandId: String?
     var memoryWarningShown = false
     var commands: Spool? { commandSpool }
@@ -85,6 +96,7 @@ final class LibraryModel: ObservableObject {
 
             checkCrashSentinel()
             store?.emptyTrash()
+            cleanStaleExports()
             reload()
         } catch {
             errorMessage = "Could not set up storage: \(error.localizedDescription)"
@@ -122,6 +134,32 @@ final class LibraryModel: ObservableObject {
 
     func reload() {
         entries = store?.load() ?? []
+    }
+
+    /// Removes any export `.zip` left behind in `paths.imports` from a previous run.
+    ///
+    /// `paths.imports` is also where game-import staging lives, but staging always uses
+    /// a UUID-named subdirectory and cleans up after itself on both success and failure
+    /// (see `importArchive`). An export, by contrast, writes a plain file directly into
+    /// `paths.imports` and hands its URL to the share sheet -- and nothing else ever
+    /// deletes that file afterwards. `performExport`/`dismissShare` remove it as soon as
+    /// the share sheet closes in the common case, but a force-quit or crash while the
+    /// sheet is open would leave it behind forever, in a directory the Files app cannot
+    /// even see (Application Support is hidden). This sweep is the backstop: anything
+    /// that is a plain file (not a staging directory) sitting directly in `paths.imports`
+    /// at startup can only be a stray export, so it is safe to remove.
+    private func cleanStaleExports() {
+        guard let paths else { return }
+        guard let contents = try? FileManager.default.contentsOfDirectory(
+            at: paths.imports, includingPropertiesForKeys: [.isDirectoryKey]) else { return }
+
+        for url in contents {
+            let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?
+                .isDirectory ?? false
+            if !isDirectory {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
     }
 
     // MARK: - Import
@@ -475,6 +513,95 @@ extension LibraryModel {
     var isPlaying: Bool {
         if case .playing = phase { return true }
         return false
+    }
+
+    // MARK: Save export
+
+    /// Build the confirmation for an export. `entry` nil means every game.
+    ///
+    /// The numbers come from `summarise`, which writes nothing -- a confirmation that
+    /// had to produce the file first would not be a confirmation.
+    func confirmExport(_ entry: LibraryEntry?) {
+        guard let paths else { return }
+
+        let chosen = entry.map { [$0] } ?? entries
+        let items = chosen.map {
+            SaveExportItem(gameId: $0.id, title: $0.title,
+                           saveDirectory: $0.saveDirectory,
+                           directory: paths.saveDirectory($0.id))
+        }
+
+        let summary = SaveExporter.summarise(items)
+
+        guard summary.fileCount > 0 else {
+            errorMessage = entry == nil
+                ? "There are no saves to back up yet."
+                : "\(entry!.title) has no saves yet."
+            return
+        }
+
+        let size = ByteCountFormatter.string(fromByteCount: summary.totalBytes,
+                                             countStyle: .file)
+        let saves = summary.fileCount == 1 ? "1 save" : "\(summary.fileCount) saves"
+
+        pendingExport = ExportConfirmation(
+            title: entry == nil ? "Back up all saves" : "Export saves",
+            message: entry == nil
+                ? "Back up saves for all \(chosen.count) games? \(saves), \(size)."
+                : "Export saves for \(entry!.title)? \(saves), \(size). "
+                  + "You'll choose where to put the file next.",
+            items: items,
+            kind: entry == nil ? .backup : .game)
+    }
+
+    func performExport() {
+        guard let confirmation = pendingExport, let paths else { return }
+        pendingExport = nil
+
+        // A previous export not yet picked up by the share sheet (or left behind by a
+        // force-quit) would otherwise sit in paths.imports forever -- see
+        // `cleanStaleExports`. Clearing it here as well means a session that exports
+        // several times in a row never accumulates more than the one file in flight.
+        if let previous = shareURL {
+            try? FileManager.default.removeItem(at: previous)
+        }
+
+        let stamp = ISO8601DateFormatter()
+        stamp.formatOptions = [.withYear, .withMonth, .withDay, .withDashSeparatorInDate]
+        let dated = stamp.string(from: Date())
+
+        let name = confirmation.kind == .backup
+            ? "VNPlayer saves \(dated).zip"
+            : "\(confirmation.items[0].title) saves \(dated).zip"
+
+        let out = paths.imports.appendingPathComponent(name)
+
+        do {
+            _ = try SaveExporter.export(confirmation.items, kind: confirmation.kind,
+                                        appVersion: Self.appVersion, to: out,
+                                        now: Date())
+            shareURL = out
+        } catch let error as SaveTransferError {
+            errorMessage = error.userMessage
+        } catch {
+            errorMessage = "That export did not work."
+        }
+    }
+
+    /// Called when the share sheet closes, whichever way: the reader picked a
+    /// destination, or cancelled. `UIActivityViewController` only dismisses once the
+    /// chosen activity has finished consuming `shareURL` (or none was chosen), so the
+    /// export file's job is done and it can be removed from `paths.imports` rather than
+    /// left there indefinitely -- see `cleanStaleExports`.
+    func dismissShare() {
+        if let shareURL {
+            try? FileManager.default.removeItem(at: shareURL)
+        }
+        shareURL = nil
+    }
+
+    static var appVersion: String {
+        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0"
     }
 
     // MARK: Opening and closing
