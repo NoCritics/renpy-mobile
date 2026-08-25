@@ -19,6 +19,10 @@ The binding constraint, in her words: *inside VNPlayer it works automatically, e
 import, in one click.* PC compatibility is a property of the bytes on disk. It is never a
 question the app asks her.
 
+"One click" governs **format and destination**, not consent. Every transfer confirms
+before it runs (§4.5) — moving save files is the one operation in this app that can
+disappoint someone hours later, and a confirmation is cheap where an undo does not exist.
+
 ## 2. What Ren'Py actually stores
 
 Verified against the vendored 8.5.3 SDK, because every number here is load-bearing.
@@ -100,7 +104,8 @@ empty and the question does not arise. A game launched once has it forever.
 
 ## 4. The flows
 
-Every one of these is one tap. Where a second tap exists, §4.1 says why.
+Every one of these is one tap plus a confirmation (§4.5). None of them asks about format,
+location, or naming.
 
 **Export — overlay strip, while playing.** Replaces quick save. Zips the running game's
 save directory, hands it to the share sheet. No dialog.
@@ -115,10 +120,10 @@ save directory, hands it to the share sheet. No dialog.
 
 ### 4.1 Import while playing quits to the library first
 
-Import replaces the strip's quick load. It is the only flow with a confirmation, and the
-reason is mechanical rather than cautious: Ren'Py caches the slot list and holds the save
-directory open, so writing files underneath a live engine is the one version of this that
-can leave the game looking at saves that are not there.
+Import replaces the strip's quick load. Every flow confirms (§4.5); this one carries an
+extra line, and the reason is mechanical rather than cautious: Ren'Py caches the slot list
+and holds the save directory open, so writing files underneath a live engine is the one
+version of this that can leave the game looking at saves that are not there.
 
 So the strip's import reads *"This returns you to the library first"*, quits, then opens
 the picker. `quitToLibrary` already exists and already tears the engine down properly
@@ -156,6 +161,31 @@ The result is a sentence: *"5 saves added, 2 placed in new slots, 1 already ther
 `auto-` and `quick-` pages are ordinary pages under this rule. A restored autosave
 landing in `auto-3` instead of `auto-1` is correct behaviour, not a defect.
 
+### 4.5 Every transfer confirms first, and the import confirmation shows the plan
+
+Four sheets, each with a cancel. They are not "are you sure" — a prompt that carries no
+information trains people to dismiss it, and the next one that mattered gets dismissed
+too. Each states what is about to happen, in the numbers it is about to happen in.
+
+| | |
+|---|---|
+| **Export a game** | *Export saves for Big Bad Dogs? 12 saves, 34 MB. You'll choose where to put the file next.* |
+| **Back up everything** | *Back up saves for all 4 games? 31 saves, 96 MB.* |
+| **Import** | *Import 5 saves into Big Bad Dogs? 3 go into empty slots, 2 into new slots. 1 is already here and will be skipped. Nothing will be replaced.* |
+| **Import from the strip** | The above, preceded by *This returns you to the library first.* |
+
+The import sheet is the one that earns its place, and it costs nothing to build: §7's
+`SaveImporter` already produces a **plan** before it writes anything, precisely so §4.3
+can be decided without touching the disk. Rendering that plan is the confirmation. A
+reader who sees "2 into new slots" before agreeing is being told the truth about her save
+file, which is the whole point of the never-destroy rule.
+
+§6's foreign-file warning appears **inside this same sheet**, not as a second dialog
+after it. Two modals in a row is how a warning becomes furniture.
+
+Cancel is always free: nothing has been written, and for import nothing has been read
+past the manifest and the directory listing.
+
 ### 4.4 `WHERE-TO-PUT-THESE.txt`
 
 Written per game, naming the three desktop paths from §2 with `<save_directory>`
@@ -192,9 +222,10 @@ game *is* Python. A save is the same trust level as the game it belongs to. The 
 consequence is therefore narrow and specific:
 
 - Files carrying our manifest import without comment.
-- Anything else — a bare `.save`, a manifest-free zip — shows **one** plain warning
-  before it is loaded: this came from outside VNPlayer, Ren'Py saves can contain code,
-  open it only if you trust where it came from.
+- Anything else — a bare `.save`, a manifest-free zip — carries **one** plain warning,
+  inside §4.5's confirmation sheet rather than as a dialog of its own: this came from
+  outside VNPlayer, Ren'Py saves can contain code, open it only if you trust where it
+  came from.
 - **No checkmark, ever.** The app must not display anything that reads as "verified
   safe", because it cannot verify that. `sha256` in the manifest proves the file is
   undamaged, which is a different claim, and the UI must not blur the two.
@@ -231,6 +262,9 @@ a file system or a device.
 - bare `.save` accepted; manifest-free zip accepted; a game archive rejected *by name*
 - `sha256` mismatch reported as damage
 - every `EntryPolicy` rejection still fires through this path
+- the plan §4.5 renders matches what the import then does — same counts, same slots. A
+  confirmation that describes something other than what happens is worse than none.
+- cancelling writes nothing: the destination directory is byte-identical afterwards
 
 **In Python:** `gameReady` carries `saveDirectory`, including the `None` case.
 
