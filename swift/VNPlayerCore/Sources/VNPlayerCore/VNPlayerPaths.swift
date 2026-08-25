@@ -63,6 +63,20 @@ public struct VNPlayerPaths {
         saves.appendingPathComponent(gameId, isDirectory: true)
     }
 
+    /// Where a game's exported save files are kept, beside its saves rather than
+    /// somewhere she has to be told about.
+    ///
+    /// Inside the Ren'Py save directory is safe: `savelocation.py:175` lists that
+    /// directory and skips anything not ending in `-LT1.save`, so a folder named `backup`
+    /// and the `.zip` files in it are invisible to the engine.
+    public func backupDirectory(_ gameId: String) -> URL {
+        saveDirectory(gameId).appendingPathComponent("backup", isDirectory: true)
+    }
+
+    /// Where a whole-library backup lands -- a sibling of the per-game folders, because
+    /// it belongs to no single one of them.
+    public var backups: URL { saves.appendingPathComponent("backup", isDirectory: true) }
+
     // MARK: - Hidden
 
     public var libraryIndex: URL { applicationSupport.appendingPathComponent("library.json") }

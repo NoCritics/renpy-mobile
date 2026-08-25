@@ -279,3 +279,33 @@ final class SpoolTests: XCTestCase {
         XCTAssertEqual(spool.drain().count, 0)
     }
 }
+
+final class BackupLocationTests: XCTestCase {
+
+    private let paths = VNPlayerPaths(
+        documents: URL(fileURLWithPath: "/Docs"),
+        applicationSupport: URL(fileURLWithPath: "/Support"))
+
+    func testAGamesBackupsSitBesideItsSaves() {
+        // Where she is told to look: On My iPhone -> VNPlayer -> Saves -> <game> -> backup.
+        XCTAssertEqual(paths.backupDirectory("bigbaddogs").path,
+                       "/Docs/Saves/bigbaddogs/backup")
+        XCTAssertTrue(
+            paths.backupDirectory("bigbaddogs").path
+                .hasPrefix(paths.saveDirectory("bigbaddogs").path),
+            "a game's backups must live under that game's own save folder")
+    }
+
+    func testAWholeLibraryBackupIsASiblingOfTheGameFolders() {
+        // It belongs to no single game, so it must not be filed under one.
+        XCTAssertEqual(paths.backups.path, "/Docs/Saves/backup")
+    }
+
+    func testTheBackupFolderIsNotItselfASaveSlot() {
+        // The guarantee that a backup cannot be swept into the next backup, and that
+        // Ren'Py ignores the folder entirely: SaveExporter selects by SaveSlot(fileName:),
+        // and savelocation.py:175 skips anything not ending in "-LT1.save".
+        XCTAssertNil(SaveSlot(fileName: "backup"))
+        XCTAssertNil(SaveSlot(fileName: "Big Bad Dogs saves 2026-08-25 2246.zip"))
+    }
+}

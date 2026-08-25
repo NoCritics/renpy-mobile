@@ -172,18 +172,19 @@ final class LibraryModel: ObservableObject {
         entries = store?.load() ?? []
     }
 
-    /// Removes any export `.zip` left behind in `paths.imports` from a previous run.
+    /// Removes any stray plain file left directly in `paths.imports` from a previous run.
     ///
-    /// `paths.imports` is also where game-import staging lives, but staging always uses
-    /// a UUID-named subdirectory and cleans up after itself on both success and failure
-    /// (see `importArchive`). An export, by contrast, writes a plain file directly into
-    /// `paths.imports` and hands its URL to the share sheet -- and nothing else ever
-    /// deletes that file afterwards. `performExport`/`dismissShare` remove it as soon as
-    /// the share sheet closes in the common case, but a force-quit or crash while the
-    /// sheet is open would leave it behind forever, in a directory the Files app cannot
-    /// even see (Application Support is hidden). This sweep is the backstop: anything
-    /// that is a plain file (not a staging directory) sitting directly in `paths.imports`
-    /// at startup can only be a stray export, so it is safe to remove.
+    /// Exports no longer land here -- they are kept, deliberately, in
+    /// `Saves/<gameId>/backup/` where the reader can find them. What remains is the
+    /// backstop for game-import staging, which uses UUID-named SUBDIRECTORIES and cleans
+    /// up after itself on both success and failure (see `importArchive`). So a plain file
+    /// sitting directly in this directory is debris from an older build or an interrupted
+    /// write, in a folder the Files app cannot even see (Application Support is hidden),
+    /// which nothing else would ever reclaim.
+    ///
+    /// It stays deliberately conservative: only plain files, never directories, and never
+    /// anything it cannot positively identify as a file -- the directory beside these is
+    /// staging that can hold a multi-gigabyte extraction.
     private func cleanStaleExports() {
         guard let paths else { return }
         guard let contents = try? FileManager.default.contentsOfDirectory(
@@ -662,15 +663,30 @@ extension LibraryModel {
         // exports several times in a row can leave more than one file sitting there until
         // the next launch, which is the safe direction to be wrong in.
 
-        let stamp = ISO8601DateFormatter()
-        stamp.formatOptions = [.withYear, .withMonth, .withDay, .withDashSeparatorInDate]
+        // Date AND time. These files used to live in a hidden staging folder and be
+        // swept at launch, so a same-day collision only ever cost a file nobody could
+        // reach. They are kept now, which makes two backups on one day a case of the
+        // second destroying the first -- exactly the thing a backup exists to prevent.
+        let stamp = DateFormatter()
+        stamp.locale = Locale(identifier: "en_US_POSIX")
+        stamp.dateFormat = "yyyy-MM-dd HHmm"
         let dated = stamp.string(from: Date())
 
         let name = confirmation.kind == .backup
             ? "VNPlayer saves \(dated).zip"
             : "\(confirmation.items[0].title) saves \(dated).zip"
 
-        let out = paths.imports.appendingPathComponent(name)
+        // Beside the saves they came from, where she can find them without being told:
+        // On My iPhone -> VNPlayer -> Saves -> <game> -> backup. A whole-library backup
+        // belongs to no single game, so it sits one level up.
+        let directory = confirmation.kind == .backup
+            ? paths.backups
+            : paths.backupDirectory(confirmation.items[0].gameId)
+
+        try? FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+
+        let out = directory.appendingPathComponent(name)
 
         do {
             _ = try SaveExporter.export(confirmation.items, kind: confirmation.kind,
