@@ -33,10 +33,14 @@ final class SaveExporterTests: XCTestCase {
                        saveDirectory: saveDirectory, directory: dir)
     }
 
-    func testSummariseCountsOnlySaveFiles() throws {
-        let dir = try makeSaveDirectory(["1-1-LT1.save", "2-1-LT1.save", "persistent"])
+    func testSummariseCountsSaveFilesAndPersistentButNothingElse() throws {
+        // Two slots, one `persistent` (which is not a slot but does travel with the
+        // export), and one stray file that is neither and must stay excluded.
+        let dir = try makeSaveDirectory(
+            ["1-1-LT1.save", "2-1-LT1.save", "persistent", "notes.txt"])
         let summary = SaveExporter.summarise([item(dir)])
-        XCTAssertEqual(summary.fileCount, 2, "persistent is not a save slot")
+        XCTAssertEqual(summary.fileCount, 3,
+                       "persistent should count alongside the two slots; notes.txt should not")
     }
 
     func testExportProducesAReadableZipWithManifestAndNote() throws {
@@ -123,6 +127,45 @@ final class SaveExporterTests: XCTestCase {
         XCTAssertTrue(note.contains("does not set a save folder name of its own"), note)
         XCTAssertFalse(note.contains("%APPDATA%"),
                        "a nil saveDirectory must not fall through to the desktop-path branch")
+    }
+
+    func testExportIncludesPersistentInTheArchiveAndManifestWithItsRealDigest() throws {
+        let dir = try makeSaveDirectory(["1-1-LT1.save", "persistent"])
+        let out = root.appendingPathComponent("out.zip")
+        _ = try SaveExporter.export([item(dir)], kind: .game, appVersion: "0.2.0",
+                                    to: out, now: Date())
+
+        let archive = try XCTUnwrap(try? Archive(url: out, accessMode: .read))
+        let paths = Set(archive.map(\.path))
+        XCTAssertTrue(paths.contains("saves/persistent"), "\(paths)")
+
+        let manifestEntry = try XCTUnwrap(archive[SaveManifest.fileName])
+        var manifestData = Data()
+        _ = try archive.extract(manifestEntry) { manifestData.append($0) }
+        let manifest = try SaveManifest.decode(manifestData)
+
+        let persistentRecord = try XCTUnwrap(
+            manifest.games[0].files.first { $0.name == "persistent" })
+        XCTAssertEqual(persistentRecord.sha256,
+                       SaveDigest.sha256(of: Data("contents of persistent".utf8)))
+    }
+
+    func testExportOfADirectoryWithNoPersistentStillWorksAndOmitsIt() throws {
+        // A freshly-installed or never-launched game may have no persistent file at all.
+        // Export must not require one.
+        let dir = try makeSaveDirectory(["1-1-LT1.save"])
+        let out = root.appendingPathComponent("out.zip")
+        _ = try SaveExporter.export([item(dir)], kind: .game, appVersion: "0.2.0",
+                                    to: out, now: Date())
+
+        let archive = try XCTUnwrap(try? Archive(url: out, accessMode: .read))
+        XCTAssertNil(archive["saves/persistent"], "no persistent file existed to export")
+
+        let manifestEntry = try XCTUnwrap(archive[SaveManifest.fileName])
+        var manifestData = Data()
+        _ = try archive.extract(manifestEntry) { manifestData.append($0) }
+        let manifest = try SaveManifest.decode(manifestData)
+        XCTAssertFalse(manifest.games[0].files.contains { $0.name == "persistent" })
     }
 
     func testExportingAGameWithNoSavesIsRefusedInWords() throws {

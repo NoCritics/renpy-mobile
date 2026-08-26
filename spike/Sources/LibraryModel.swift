@@ -831,25 +831,60 @@ extension LibraryModel {
         for plan in set.plans {
             let into = plan.title.map { " into \($0)" } ?? ""
             let fresh = plan.addedCount - plan.newSlotCount
-            // I10: "Import 1 saves" -- every count in this sentence needs its own
-            // singular, not just the leading one.
-            let saves = plan.addedCount == 1 ? "1 save" : "\(plan.addedCount) saves"
-            var line = "Import \(saves)\(into)?"
-            if fresh > 0 {
-                line += fresh == 1
-                    ? " 1 goes into an empty slot."
-                    : " \(fresh) go into empty slots."
+
+            // Told before the fact, in the same words the result will use afterwards
+            // (`SaveImporter.sentence`) -- `.copy`'s clause and `.keptExisting`'s both
+            // describe what WILL happen, not what already has.
+            let persistentClause: String?
+            switch plan.persistentAction {
+            case .copy:
+                persistentClause = "Your gallery and settings for this game will come along too."
+            case .keptExisting:
+                persistentClause = "You already have gallery and settings here for this "
+                    + "game, so those will be left as they are."
+            case .none:
+                persistentClause = nil
             }
-            if plan.newSlotCount > 0 {
-                line += plan.newSlotCount == 1
-                    ? " 1 into a new slot."
-                    : " \(plan.newSlotCount) into new slots."
+
+            var line: String
+            if plan.addedCount > 0 {
+                // I10: "Import 1 saves" -- every count in this sentence needs its own
+                // singular, not just the leading one.
+                let saves = plan.addedCount == 1 ? "1 save" : "\(plan.addedCount) saves"
+                line = "Import \(saves)\(into)?"
+                if fresh > 0 {
+                    line += fresh == 1
+                        ? " 1 goes into an empty slot."
+                        : " \(fresh) go into empty slots."
+                }
+                if plan.newSlotCount > 0 {
+                    line += plan.newSlotCount == 1
+                        ? " 1 into a new slot."
+                        : " \(plan.newSlotCount) into new slots."
+                }
+                if !plan.alreadyPresent.isEmpty {
+                    line += plan.alreadyPresent.count == 1
+                        ? " 1 already here and will be skipped."
+                        : " \(plan.alreadyPresent.count) already here and will be skipped."
+                }
+            } else if persistentClause != nil {
+                // No save slots at all in this plan -- everything it carries for this
+                // game is `persistent`. "Import 0 saves" would read as though there is
+                // nothing here, when there is: the gallery and settings file.
+                line = "Import\(into)?"
+                if !plan.alreadyPresent.isEmpty {
+                    line += plan.alreadyPresent.count == 1
+                        ? " 1 save already here and will be skipped."
+                        : " \(plan.alreadyPresent.count) saves already here and will be skipped."
+                }
+            } else {
+                line = "Import\(into)?"
             }
-            if !plan.alreadyPresent.isEmpty {
-                line += plan.alreadyPresent.count == 1
-                    ? " 1 already here and will be skipped."
-                    : " \(plan.alreadyPresent.count) already here and will be skipped."
+
+            if let persistentClause {
+                line += " " + persistentClause
             }
+
             lines.append(line)
         }
 

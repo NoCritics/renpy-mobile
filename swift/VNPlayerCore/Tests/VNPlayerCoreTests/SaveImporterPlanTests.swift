@@ -539,6 +539,77 @@ final class SaveImporterPlanTests: XCTestCase {
         }
     }
 
+    // MARK: - persistent
+
+    func testPersistentIsPlannedForCopyWhenTheDestinationHasNone() throws {
+        let source = try makeExport(names: ["1-1-LT1.save", "persistent"])
+        let set = try SaveImporter.plan(source: source, resolve: alwaysResolve,
+                                        caps: .default)
+
+        XCTAssertEqual(set.plans[0].persistentAction, .copy)
+    }
+
+    func testPersistentIsKeptExistingWhenTheDestinationAlreadyHasOne() throws {
+        try Data("already here".utf8)
+            .write(to: destination.appendingPathComponent("persistent"))
+
+        let source = try makeExport(names: ["1-1-LT1.save", "persistent"])
+        let set = try SaveImporter.plan(source: source, resolve: alwaysResolve,
+                                        caps: .default)
+
+        XCTAssertEqual(set.plans[0].persistentAction, .keptExisting)
+    }
+
+    func testNoPersistentInTheArchiveIsPlannedAsNone() throws {
+        let source = try makeExport(names: ["1-1-LT1.save"])
+        let set = try SaveImporter.plan(source: source, resolve: alwaysResolve,
+                                        caps: .default)
+
+        XCTAssertEqual(set.plans[0].persistentAction, .none)
+    }
+
+    func testADamagedPersistentIsReportedByName() throws {
+        // Same proof as a slot file's digest check (testADamagedFileIsReportedByName)
+        // exercised on `persistent` specifically -- a broken implementation that skipped
+        // digest-checking `persistent` (since it isn't a slot) would import tampered
+        // bytes silently instead of throwing here.
+        let source = try makeExport(names: ["1-1-LT1.save", "persistent"])
+        try corrupt(entry: "saves/persistent", in: source)
+
+        XCTAssertThrowsError(
+            try SaveImporter.plan(source: source, resolve: alwaysResolve, caps: .default)
+        ) { error in
+            XCTAssertEqual(error as? SaveTransferError, .damagedFile(name: "persistent"))
+        }
+    }
+
+    func testAPersistentTheManifestPromisedButTheArchiveLacksIsReported() throws {
+        let source = try makeExport(names: ["1-1-LT1.save", "persistent"])
+        let archive = try XCTUnwrap(try? Archive(url: source, accessMode: .update))
+        let entry = try XCTUnwrap(archive["saves/persistent"])
+        try archive.remove(entry)
+
+        XCTAssertThrowsError(
+            try SaveImporter.plan(source: source, resolve: alwaysResolve, caps: .default)
+        ) { error in
+            XCTAssertEqual(error as? SaveTransferError, .damagedFile(name: "persistent"))
+        }
+    }
+
+    func testAGameWithOnlyPersistentAndNoSavesStillPlans() throws {
+        // A game the reader has explored (unlocked gallery entries, changed a preference)
+        // but never actually saved into a slot. `byGame` alone would never see this
+        // group -- it exists only in `persistentByGame` -- so this is the test that would
+        // fail if plan() kept iterating `byGame` alone after the change.
+        let source = try makeExport(names: ["persistent"])
+        let set = try SaveImporter.plan(source: source, resolve: alwaysResolve,
+                                        caps: .default)
+
+        XCTAssertEqual(set.plans.count, 1)
+        XCTAssertEqual(set.plans[0].addedCount, 0)
+        XCTAssertEqual(set.plans[0].persistentAction, .copy)
+    }
+
     /// Replace one entry's bytes so its digest no longer matches the manifest.
     private func corrupt(entry path: String, in zip: URL) throws {
         let archive = try XCTUnwrap(try? Archive(url: zip, accessMode: .update))

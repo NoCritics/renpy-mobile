@@ -254,7 +254,8 @@ final class SaveImporterApplyTests: XCTestCase {
         ]
         let plan = SaveImportPlan(gameId: "bigbaddogs", title: "Big Bad Dogs",
                                   isForeign: false, placements: placements,
-                                  alreadyPresent: [], sourcePrefix: "saves")
+                                  alreadyPresent: [], sourcePrefix: "saves",
+                                  persistentAction: .none)
 
         XCTAssertThrowsError(
             try SaveImporter.apply(plan, source: source, into: destination)
@@ -267,5 +268,97 @@ final class SaveImporterApplyTests: XCTestCase {
             try Data(contentsOf: destination.appendingPathComponent("1-1-LT1.save")),
             Data("contents of 1-1-LT1.save".utf8),
             "the second placement overwrote the first -- destinations must never collide")
+    }
+
+    // MARK: - persistent
+
+    func testPersistentIsCopiedIntoAnEmptyDestination() throws {
+        let source = try makeExport(names: ["1-1-LT1.save", "persistent"])
+        let result = try importAll(source)
+
+        XCTAssertEqual(result.persistentAction, .copy)
+        XCTAssertTrue(names.contains("persistent"))
+        XCTAssertEqual(
+            try Data(contentsOf: destination.appendingPathComponent("persistent")),
+            Data("contents of persistent".utf8))
+    }
+
+    /// The never-destroy rule applied to the one file that isn't a slot: an existing
+    /// `persistent` at the destination must survive an import byte-for-byte, even though
+    /// the archive carries a DIFFERENT `persistent` for the same game. Comparing against
+    /// the original bytes (not merely "a persistent file exists") is what makes this test
+    /// fail against an implementation that copies over the existing file: an overwrite
+    /// would leave a `persistent` present, just with the wrong (incoming) bytes.
+    func testAnExistingPersistentIsNeverOverwritten() throws {
+        let existing = Data("DO NOT LOSE THIS GALLERY DATA".utf8)
+        try existing.write(to: destination.appendingPathComponent("persistent"))
+
+        let source = try makeExport(names: ["1-1-LT1.save", "persistent"])
+        let result = try importAll(source)
+
+        XCTAssertEqual(result.persistentAction, .keptExisting)
+        XCTAssertEqual(
+            try Data(contentsOf: destination.appendingPathComponent("persistent")),
+            existing,
+            "the pre-existing persistent file was overwritten")
+        // The slot save from the same archive must still have landed -- keeping
+        // `persistent` untouched must not abort the rest of the import.
+        XCTAssertTrue(names.contains("1-1-LT1.save"))
+    }
+
+    func testRoundTripPreservesPersistentBytesExactly() throws {
+        let saves = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: saves, withIntermediateDirectories: true)
+        let original = Data([0x00, 0x01, 0xFF, 0x7F, 0x80, 0x10, 0x00, 0x42])
+        try original.write(to: saves.appendingPathComponent("persistent"))
+        try Data("contents of 1-1-LT1.save".utf8)
+            .write(to: saves.appendingPathComponent("1-1-LT1.save"))
+
+        let out = root.appendingPathComponent("roundtrip.zip")
+        _ = try SaveExporter.export(
+            [SaveExportItem(gameId: "bigbaddogs", title: "Big Bad Dogs",
+                            saveDirectory: "BBD-1", directory: saves)],
+            kind: .game, appVersion: "0.2.0", to: out, now: Date())
+
+        _ = try importAll(out)
+
+        XCTAssertEqual(
+            try Data(contentsOf: destination.appendingPathComponent("persistent")),
+            original, "persistent's bytes must round-trip exactly, including non-UTF8 bytes")
+    }
+
+    func testResultPersistentActionMatchesThePlanExactly() throws {
+        let source = try makeExport(names: ["1-1-LT1.save", "persistent"])
+        let set = try SaveImporter.plan(source: source,
+                                        resolve: { _ in self.destination },
+                                        caps: .default)
+        let result = try SaveImporter.apply(set.plans[0], source: source, into: destination)
+
+        XCTAssertEqual(result.persistentAction, set.plans[0].persistentAction)
+        XCTAssertEqual(result.persistentAction, .copy)
+        XCTAssertTrue(result.sentence.lowercased().contains("gallery"), result.sentence)
+    }
+
+    func testTheSentenceNamesTheKeptCaseWithoutSoundingLikeFailure() throws {
+        try Data("existing".utf8)
+            .write(to: destination.appendingPathComponent("persistent"))
+        let source = try makeExport(names: ["1-1-LT1.save", "persistent"])
+        let result = try importAll(source)
+
+        XCTAssertEqual(result.persistentAction, .keptExisting)
+        let lowered = result.sentence.lowercased()
+        XCTAssertTrue(lowered.contains("gallery") || lowered.contains("kept"), result.sentence)
+        XCTAssertFalse(lowered.contains("fail"), result.sentence)
+        XCTAssertFalse(lowered.contains("error"), result.sentence)
+    }
+
+    func testAGameWithOnlyPersistentImportsWithASentenceThatSaysSo() throws {
+        let source = try makeExport(names: ["persistent"])
+        let result = try importAll(source)
+
+        XCTAssertEqual(result.added, 0)
+        XCTAssertEqual(result.persistentAction, .copy)
+        XCTAssertTrue(names.contains("persistent"))
+        XCTAssertTrue(result.sentence.lowercased().contains("gallery"), result.sentence)
     }
 }

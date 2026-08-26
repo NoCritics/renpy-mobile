@@ -175,14 +175,20 @@ public enum SaveExporter {
 
     // MARK: - Helpers
 
-    /// Save files in a directory, keyed by file name. Anything that is not a slot --
-    /// `persistent`, a stray `.txt` -- is not a save and is not exported.
+    /// Save files in a directory, keyed by file name, plus `persistent` when it exists.
+    ///
+    /// `persistent` (renpy/persistent.py:270) is not a slot -- it holds `_seen_ever`,
+    /// `_seen_images`, `_seen_audio`, `_chosen` and the reader's preferences, not a
+    /// playthrough -- but it is real data a reinstall would otherwise lose silently
+    /// (gallery unlocks, skip-unread, settings), so it travels with the slots. Anything
+    /// else -- a stray `.txt`, the `backup` directory this same folder now holds -- is
+    /// neither a slot nor `persistent` and is not exported.
     private static func saveFiles(in directory: URL) -> [(String, URL)] {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path))
             ?? []
 
         return names.compactMap { name in
-            guard SaveSlot(fileName: name) != nil else { return nil }
+            guard SaveSlot(fileName: name) != nil || name == "persistent" else { return nil }
             return (name, directory.appendingPathComponent(name))
         }
     }
