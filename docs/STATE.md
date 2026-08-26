@@ -1,26 +1,72 @@
 # Where this project is
 
-**Read this first.** Last updated 2026-08-25.
+**Read this first.** Last updated 2026-08-26.
 
 ## In one paragraph
 
-VNPlayer is a free, open-source iOS player for Ren'Py 8 visual novels. Milestone B is
-merged and released as **v0.1.0**. **M2 (library and import) is device-confirmed.**
-**M3 (in-game overlay)** — roll back, skip, the control strip, and the three icons that
-open the game's own Save, Load and Preferences pages — is device-confirmed except for
-three small checks noted below that were never closed out. **M4 (save export and import)
-is code-complete and green in CI, and has not touched a device at all.** Everything lives
-on `milestone-d/save-transfer`; `main` is still at the Milestone B merge.
+VNPlayer is a free, open-source iOS player for Ren'Py 8 visual novels. **M4 (save export
+and import) is merged to `main`** along with everything before it. M2 (library and import)
+and M3 (the in-game overlay) are device-confirmed. **M4 has had a first device pass**:
+adding a game, backing up, and the control strip all work. The rest of M4's checklist
+below has not been run.
+
+The last release is still **v0.1.0**, which is Milestone B — the diagnostic build with no
+library at all. Anyone following `README.md` or `docs/INSTALL.md` today installs that.
+**Cut a release before either document goes near a non-developer.**
 
 ## The build to install
 
-**Run `32897538235`**, branch `main`, artifact `VNPlayer-ipa` (28,813,028 bytes).
+**Run `32918377968`**, branch `main`, artifact `VNPlayer-ipa`.
 Sideloadly as usual — `docs/INSTALL.md`.
 
 That size is worth knowing: a `main` build that comes back around **27.5 MB** is stock
 Ren'Py with none of our Swift compiled in. Three workflow steps used to be gated to
 feature branches only, so `main` and release tags produced an app-shaped file containing
 none of the app. Fixed, but the size is the tell if it ever regresses.
+
+## Landed after the merge, from device use
+
+- **The file picker never opened.** Seven presentation modifiers were stacked on one
+  view, including two `.fileImporter`s — `.fileImporter` is built on `.sheet`, so only
+  the later one could present and "Add game" silently did nothing. Now exactly one
+  modifier of each kind. This had been flagged in review as an iOS 15 hazard and
+  deliberately parked; parking it was wrong.
+- **`print` does not reach the device log** for a sideloaded app — it writes to stdout,
+  which the log never sees. Every `[vnspike]` diagnostic is `NSLog` now. The lines that
+  were supposed to explain a picker failure had never once appeared.
+- **A stranded picker flag needed an app restart.** `guard !showPicker else { return }`
+  turned any transient failure permanent, because nothing but SwiftUI's binding ever
+  cleared the flag. It now heals on the next tap.
+- **The library screen was littering `Documents`.** It is itself a Ren'Py project, so it
+  inherits `autosave_slots = 10` and autosaved itself into the folder the reader browses,
+  mixed in with her real saves and distinguishable only by being smaller. Its writes go
+  to Application Support now. **Deliberately did NOT set `config.has_autosave = False`**:
+  `config` is process-global and nothing in the restart path was found to reset it, so a
+  leak into a loaded game would silently disable autosaves on a real playthrough.
+- **Backups live in `Saves/<gameId>/backup/`**, and a whole-library backup in
+  `Saves/backup/`. Safe inside a Ren'Py save directory: `savelocation.py:175` skips
+  anything not ending in `-LT1.save`. Filenames gained the time, because kept files make
+  a same-day collision one backup destroying another.
+- **Size caps raised to 64 GiB total / 16 GiB per entry.** Real games run 4–8 GB and keep
+  assets in one or two `.rpa` files, so the old 4 GiB per-entry cap rejected them
+  outright. The bomb defences (`maxCompressionRatio`, `maxEntries`) are untouched, and
+  free space — checked against the volume before any write — is the real limit.
+
+## In flight at the last compaction
+
+**`persistent` in save transfer**, uncommitted in the working tree. Without it,
+reinstall-and-restore returns her save slots and silently drops gallery unlocks,
+seen-text (so skip-unread stops working) and preferences. Design: export includes the
+file; import copies it only when the destination has none, and never overwrites an
+existing one. Ren'Py's own union-merge (`persistent.py:364`) is engine-side Python and
+cannot be called from Swift, so merging is a later refinement, not something to fake.
+
+Check `git status` — if those Swift files are still modified, that work was not finished.
+
+## Next topic
+
+**Ren'Py 7 support.** Currently refused by design with a message. Whether to add it is
+undecided and was queued for discussion.
 
 ## What M4 added
 
