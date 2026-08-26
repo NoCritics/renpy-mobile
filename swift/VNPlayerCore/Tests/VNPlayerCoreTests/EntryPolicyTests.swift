@@ -217,3 +217,38 @@ final class GameIdentityTests: XCTestCase {
         XCTAssertEqual(GameIdentityDeriver.uniqueId("", taken: ["game"]), "game-2")
     }
 }
+
+final class ImportCapsSizeTests: XCTestCase {
+
+    private let gib = Int64(1_073_741_824)
+
+    func testTheDefaultsAccommodateARealVisualNovel() {
+        // Measured against the library this app exists to read: games run 4-8 GB, and
+        // their assets usually sit in one or two .rpa archives, so one entry can pass
+        // 4 GiB by itself. The old defaults (8 GiB total, 4 GiB per entry) rejected
+        // exactly that. This test is the product decision written down, so lowering it
+        // back has to be deliberate rather than tidy-looking.
+        let caps = ImportCaps.default
+
+        XCTAssertGreaterThan(caps.maxTotalUncompressed, 8 * gib,
+                             "an 8 GB game must not sit at the boundary of the total cap")
+        XCTAssertGreaterThan(caps.maxEntryUncompressed, 6 * gib,
+                             "a single .rpa in a large game routinely passes 4 GiB")
+    }
+
+    func testTheBombDefencesAreNotTheSizeCaps() {
+        // Raising the size caps is only safe because neither of these moved. A zip bomb
+        // is defined by expanding absurdly, not by being large -- real game assets are
+        // already compressed and barely shrink.
+        XCTAssertEqual(ImportCaps.default.maxCompressionRatio, 1000)
+        XCTAssertEqual(ImportCaps.default.maxEntries, 100_000)
+    }
+
+    func testTheTotalCapSitsAboveAnyPlausiblePhone() {
+        // Deliberate: free space is the real limit and is checked separately against the
+        // volume, with a message naming both numbers. Keeping the cap above any device
+        // capacity means that check -- the one that can say something useful -- is the
+        // one the reader hears from.
+        XCTAssertGreaterThanOrEqual(ImportCaps.default.maxTotalUncompressed, 64 * gib)
+    }
+}

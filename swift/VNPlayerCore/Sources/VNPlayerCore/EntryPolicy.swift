@@ -11,10 +11,32 @@ public struct ImportCaps: Equatable {
     /// compressible ones (rpy source, json) do not reach anywhere near this.
     public var maxCompressionRatio: Double
 
+    /// The two size caps were guessed before anyone had measured a real visual novel.
+    /// Reality, reported from the library this app exists to read: games run 4-8 GB, and
+    /// their assets usually sit in one or two `.rpa` archives, so a SINGLE entry can pass
+    /// 4 GiB on its own. The old numbers rejected those games outright -- the per-entry
+    /// cap with "A file in this archive is 5.2 GB, more than the 4.0 GB limit", which is
+    /// a true sentence about a limit that should never have applied.
+    ///
+    /// Raising them does not weaken the zip-bomb defence, because the total size was
+    /// never what carried it:
+    ///
+    /// * `maxCompressionRatio` is the actual bomb check, and it is unchanged. Real game
+    ///   assets are already compressed (png, ogg, webp, rpa) and barely shrink; a bomb
+    ///   is defined by expanding absurdly, not by being large.
+    /// * `maxEntries` is unchanged, and bounds the other bomb shape -- millions of tiny
+    ///   files.
+    /// * **Free space is the real limit, and it is checked separately** against the
+    ///   volume's actual capacity before a byte is written, with a message naming both
+    ///   numbers. Setting the total cap ABOVE any plausible phone means that check --
+    ///   the one that can say something useful -- is the one that speaks.
+    ///
+    /// Extraction streams in 256 KiB chunks straight to a file handle, so a 6 GB entry
+    /// costs 256 KiB of memory, not 6 GB. Size was never a memory question here.
     public static let `default` = ImportCaps(
         maxEntries: 100_000,
-        maxTotalUncompressed: 8 * 1_073_741_824,
-        maxEntryUncompressed: 4 * 1_073_741_824,
+        maxTotalUncompressed: 64 * 1_073_741_824,
+        maxEntryUncompressed: 16 * 1_073_741_824,
         maxCompressionRatio: 1000
     )
 
