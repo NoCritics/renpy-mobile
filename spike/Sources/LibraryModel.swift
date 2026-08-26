@@ -636,13 +636,23 @@ extension LibraryModel {
 
         let size = ByteCountFormatter.string(fromByteCount: summary.totalBytes,
                                              countStyle: .file)
-        let saves = summary.fileCount == 1 ? "1 save" : "\(summary.fileCount) saves"
+
+        // `persistent` is counted separately from the slots. It is exported, and the
+        // reader is told so in the same words the import side uses -- but calling it a
+        // save would make this number disagree with the slots she can count on the
+        // game's own Load screen, which is the one place she would check it against.
+        let saves = summary.saveCount == 1 ? "1 save" : "\(summary.saveCount) saves"
+        let extras = summary.persistentCount > 0
+            ? " Your gallery and settings come along too." : ""
+        let counts = summary.saveCount == 0
+            ? "No saves yet, but your gallery and settings will be included. \(size)."
+            : "\(saves), \(size).\(extras)"
 
         pendingExport = ExportConfirmation(
             title: entry == nil ? "Back up all saves" : "Export saves",
             message: entry == nil
-                ? "Back up saves for all \(chosen.count) games? \(saves), \(size)."
-                : "Export saves for \(entry!.title)? \(saves), \(size). "
+                ? "Back up saves for all \(chosen.count) games? \(counts)"
+                : "Export saves for \(entry!.title)? \(counts) "
                   + "You'll choose where to put the file next.",
             items: items,
             kind: entry == nil ? .backup : .game)

@@ -41,6 +41,31 @@ final class SaveExporterTests: XCTestCase {
         let summary = SaveExporter.summarise([item(dir)])
         XCTAssertEqual(summary.fileCount, 3,
                        "persistent should count alongside the two slots; notes.txt should not")
+        // The split the confirmation sheet reads from: it says "2 saves", not "3".
+        XCTAssertEqual(summary.saveCount, 2, "persistent is not a slot save")
+        XCTAssertEqual(summary.persistentCount, 1)
+    }
+
+    func testSummariseReportsNoPersistentWhenThereIsNone() throws {
+        // Fails if persistentCount ever counted slots, which would make the confirmation
+        // claim a gallery file that is not in the archive.
+        let dir = try makeSaveDirectory(["1-1-LT1.save", "2-1-LT1.save"])
+        let summary = SaveExporter.summarise([item(dir)])
+        XCTAssertEqual(summary.saveCount, 2)
+        XCTAssertEqual(summary.persistentCount, 0)
+    }
+
+    func testExportReturnsTheSameSplitSummariseDid() throws {
+        // summarise() feeds the confirmation, export() feeds the result message. They
+        // count in two separate loops, so they can drift apart; this pins them together.
+        let dir = try makeSaveDirectory(["1-1-LT1.save", "2-1-LT1.save", "persistent"])
+        let out = root.appendingPathComponent("split.zip")
+        let planned = SaveExporter.summarise([item(dir)])
+        let actual = try SaveExporter.export([item(dir)], kind: .game, appVersion: "0.2.0",
+                                             to: out)
+        XCTAssertEqual(planned.saveCount, actual.saveCount)
+        XCTAssertEqual(planned.persistentCount, actual.persistentCount)
+        XCTAssertEqual(actual.persistentCount, 1)
     }
 
     func testExportProducesAReadableZipWithManifestAndNote() throws {

@@ -25,11 +25,20 @@ public struct SaveExportItem {
 }
 
 public struct SaveExportSummary: Equatable {
+    /// Every file the archive carries, `persistent` included.
     public let fileCount: Int
+    /// How many of `fileCount` are `persistent` -- at most one per game.
+    public let persistentCount: Int
     public let totalBytes: Int64
 
-    public init(fileCount: Int, totalBytes: Int64) {
+    /// Slot saves only. What a reader means when she counts her saves: `persistent`
+    /// is real data and is exported, but it is not a playthrough, and counting it as
+    /// one makes the confirmation disagree with the number of slots she can see.
+    public var saveCount: Int { fileCount - persistentCount }
+
+    public init(fileCount: Int, persistentCount: Int = 0, totalBytes: Int64) {
         self.fileCount = fileCount
+        self.persistentCount = persistentCount
         self.totalBytes = totalBytes
     }
 }
@@ -44,16 +53,19 @@ public enum SaveExporter {
     /// first would not be a confirmation.
     public static func summarise(_ items: [SaveExportItem]) -> SaveExportSummary {
         var count = 0
+        var persistents = 0
         var bytes: Int64 = 0
 
         for item in items {
-            for (_, url) in saveFiles(in: item.directory) {
+            for (name, url) in saveFiles(in: item.directory) {
                 count += 1
+                if name == "persistent" { persistents += 1 }
                 bytes += fileSize(url)
             }
         }
 
-        return SaveExportSummary(fileCount: count, totalBytes: bytes)
+        return SaveExportSummary(fileCount: count, persistentCount: persistents,
+                                 totalBytes: bytes)
     }
 
     public static func export(
@@ -104,6 +116,7 @@ public enum SaveExporter {
 
         var manifestGames: [SaveManifest.Game] = []
         var count = 0
+        var persistents = 0
         var bytes: Int64 = 0
 
         for item in items {
@@ -144,6 +157,7 @@ public enum SaveExporter {
                                                  bytes: Int64(data.count),
                                                  sha256: SaveDigest.sha256(of: data)))
                 count += 1
+                if name == "persistent" { persistents += 1 }
                 bytes += Int64(data.count)
             }
 
@@ -170,7 +184,8 @@ public enum SaveExporter {
             .joined(separator: "\n\n----------------------------------------\n\n")
         try addText(Data(note.utf8), at: "WHERE-TO-PUT-THESE.txt", to: archive)
 
-        return SaveExportSummary(fileCount: count, totalBytes: bytes)
+        return SaveExportSummary(fileCount: count, persistentCount: persistents,
+                                 totalBytes: bytes)
     }
 
     // MARK: - Helpers
