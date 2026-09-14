@@ -1,6 +1,6 @@
 # Where this project is
 
-**Read this first.** Last updated 2026-08-26.
+**Read this first.** Last updated 2026-09-14.
 
 ## In one paragraph
 
@@ -10,14 +10,23 @@ and M3 (the in-game overlay) are device-confirmed. **M4 has had a first device p
 adding a game, backing up, and the control strip all work. The rest of M4's checklist
 below has not been run.
 
-The last release is still **v0.1.0**, which is Milestone B — the diagnostic build with no
-library at all. Anyone following `README.md` or `docs/INSTALL.md` today installs that.
-**Cut a release before either document goes near a non-developer.**
+**v0.2.0 is tagged** and is what `releases/latest` serves. Until 2026-09-14 the only
+release was v0.1.0 — the Milestone B diagnostic screen — and a fresh install from the
+release page on a new machine produced exactly that. The README's note steering readers
+to Actions had been correct for three weeks and nobody followed it, because nobody
+reads a note when there is a Releases tab. Lesson recorded: **a green `main` that is not
+tagged does not exist for anyone but the developer.**
 
 ## The build to install
 
-**Run `32918377968`**, branch `main`, artifact `VNPlayer-ipa`.
-Sideloadly as usual — `docs/INSTALL.md`.
+**`v0.2.0`** from <https://github.com/NoCritics/renpy-mobile/releases/latest>.
+Sideloadly as usual — `docs/INSTALL.md`. Release builds now stamp
+`CFBundleShortVersionString` from the tag (`patch_info_plist.sh`, `VNPLAYER_VERSION`);
+every build before this reported renios's template `1.0`, and wrote that into backup
+manifests as `appVersion`.
+
+Between releases, the newest green run on `main` is the equivalent — Actions, artifact
+`VNPlayer-ipa`, unzip.
 
 That size is worth knowing: a `main` build that comes back around **27.5 MB** is stock
 Ren'Py with none of our Swift compiled in. Three workflow steps used to be gated to
@@ -52,21 +61,52 @@ none of the app. Fixed, but the size is the tell if it ever regresses.
   outright. The bomb defences (`maxCompressionRatio`, `maxEntries`) are untouched, and
   free space — checked against the volume before any write — is the real limit.
 
-## In flight at the last compaction
+## `persistent` travels with saves (landed, `695f849` + `d4ee3da`)
 
-**`persistent` in save transfer**, uncommitted in the working tree. Without it,
-reinstall-and-restore returns her save slots and silently drops gallery unlocks,
-seen-text (so skip-unread stops working) and preferences. Design: export includes the
-file; import copies it only when the destination has none, and never overwrites an
-existing one. Ren'Py's own union-merge (`persistent.py:364`) is engine-side Python and
-cannot be called from Swift, so merging is a later refinement, not something to fake.
+Without it, reinstall-and-restore returned her save slots and silently dropped gallery
+unlocks, seen-text (so skip-unread stopped working) and preferences. Export includes the
+file when the save directory has one; import copies it only when the destination has
+none, and never overwrites an existing one — checked at plan time, re-checked at write
+time, and written `.withoutOverwriting`. Both confirmations name it in words. It is
+counted separately from the slots, so "3 saves" still means three slots. Ren'Py's own
+union-merge (`persistent.py:364`) is engine-side Python and cannot be called from Swift;
+merging is a later refinement, not something to fake. Not yet exercised on a device.
 
-Check `git status` — if those Swift files are still modified, that work was not finished.
+## Ren'Py 7 — discussed, undecided
 
-## Next topic
+Refused today by design. Facts established on 2026-08-26, verified against the vendored
+8.5.3 SDK unless marked otherwise:
 
-**Ren'Py 7 support.** Currently refused by design with a message. Whether to add it is
-undecided and was queued for discussion.
+- **Ren'Py 8 already carries the compatibility layer.** `renpy/python.py:1198` retries a
+  `SyntaxError` through `renpy/compat/fixes.py` (`print` statements, `raise X, y`,
+  octals, `<>`, backtick repr). Syntax only — `has_key`, `iteritems`, integer division
+  and `map`/`filter` iterators fail at runtime, the first two loudly, the rest silently.
+- **A 7 `.rpyc` is rejected** (`script.py:957`, `script_version` 5003000) and recompiled
+  from the adjacent `.rpy` (`script.py:1051-1063`). **Scripts inside an `.rpa` have no
+  fallback** (`script.py:992`) — a source-stripped 7 game cannot run on an 8 engine by
+  any route.
+- **Ren'Py's default build ships `.rpy` source, loose.** `00build.rpy:233`'s catch-all is
+  `("**", "all")` and the template `options.rpy` has its archive rules commented out.
+  Stripping is something a developer adds. How many do is unmeasured.
+- **The detector has a gap.** The `py2-` prefix only appeared at 7.5; earlier 64-bit
+  builds use plain `lib/windows-x86_64`, hit neither condition in
+  `EngineDetection.swift`, and fall through to `.unknown` — so they import today, and
+  fail later, while we believe they are refused.
+- **Ren'Py 7.8.7 (March 2025) is the final 7.x release and ships `renpy-7.8.7-renios.zip`
+  and `renpy-7.8.7-web.zip`** — <https://renpy.org/latest-7.html>. Not verified in
+  this repo. Two external models both assumed py2 iOS prebuilts were dead; they are not.
+- **Two CPythons in one binary** collide on exported symbols and iOS forbids a second
+  process. A *second app* built from renios 7.8.7 does not have that problem, and reads
+  7 bytecode natively — archived scripts included. Costs a free-Apple-ID slot, a Python 2
+  `shell/`, and whether 2025 prebuilts still link on current Xcode, which is a CI
+  experiment away.
+- A WKWebView running the 7.8.7 web runtime is the other real option; the memory ceiling
+  (32-bit wasm) against 4–8 GB games and saves living in evictable browser storage are the
+  costs.
+
+Full comparison of the two external consultations is in the 2026-08-26 session; the
+contradictions between them were settled by reading the source, in the 8 engine's favour
+on every point but the renios one.
 
 ## What M4 added
 
@@ -83,11 +123,11 @@ games instead of guessing.
 The in-game control strip changed too: quick save and quick load are gone from it, and
 export and import take their place.
 
-## Device checklist for M4 — nothing below has been checked on a phone yet
+## Device checklist for M4 — partly checked
 
-This is code that has only ever run in GitHub's CI, never on real hardware, never against
-a real file system, real iCloud, or a real second device. Everything here needs someone
-with an iPhone to actually try it. Run these in order — each one only assumes the ones
+Adding a game, per-game export, whole-library backup and the control strip have been used
+on the phone. The rest of this list has not, and `persistent` has not been exercised at
+all. Everything unchecked still needs someone with an iPhone to actually try it. Run these in order — each one only assumes the ones
 before it.
 
 1. **Export a game that already has real saves on it**, using two different destinations
@@ -213,7 +253,7 @@ working and silently breaks quit-to-library. There is deliberately no such wrapp
 
 ## Still open
 
-- **All nine checks above.** M4 has never run outside CI.
+- **The unchecked items above**, and `persistent` end to end.
 - **Whether a Sideloadly re-sign at the 7-day expiry preserves `Documents/Saves/`, or wipes
   it, is still unanswered.** It needs a real expiry cycle to test: re-sign, then look. M4's
   export/backup feature now gives you a way to protect saves against that regardless of the
@@ -237,7 +277,8 @@ working and silently breaks quit-to-library. There is deliberately no such wrapp
   which could read as your saves vanishing when they were never touched.
 - **Cover art**, re-import/update of a game itself, rename, and app settings: still not
   built.
-- Ren'Py 7 support: refused with a message, by design.
+- Ren'Py 7 support: refused with a message, by design — see the section above for what
+  is now known, and the detector gap that means the refusal is incomplete.
 - `device_log.sh` should pass `-a` to grep; game output can be non-UTF-8 and the summary
   currently warns "binary file matches".
 
