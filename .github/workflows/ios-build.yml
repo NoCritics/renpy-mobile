@@ -157,7 +157,11 @@ jobs:
       # spools stay in Library/Application Support where the Files app cannot reach them.
       - name: Expose Documents to the Files app
         if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/spike/') || startsWith(github.ref, 'refs/heads/milestone-c/') || startsWith(github.ref, 'refs/heads/milestone-d/') || startsWith(github.ref, 'refs/tags/v') }}
-        run: bash scripts/ios/patch_info_plist.sh
+        env:
+          # The tag name on a release build (v0.2.0), empty on a branch build. The script
+          # strips the leading v; an empty value leaves the plist's version alone.
+          VNPLAYER_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+        run: VNPLAYER_VERSION="${VNPLAYER_TAG#v}" bash scripts/ios/patch_info_plist.sh
 
       # Replace Ren'Py's generated .xcodeproj with one XcodeGen builds, so our Swift and
       # ObjC sources can be members of the target. Proven on the spike branch, 2026-08-25.

@@ -44,6 +44,17 @@ set_bool() {
 set_bool UIFileSharingEnabled true
 set_bool LSSupportsOpeningDocumentsInPlace true
 
+# Stamp the version on release builds. renios's template plist says "1.0", and that is
+# what the app reported for every build until v0.2.0 -- including inside every save
+# export, where SaveExporter records CFBundleShortVersionString as the manifest's
+# appVersion. A backup that claims to come from "1.0" of an app that never had a 1.0
+# is not a backup anyone can date. CI sets this from the tag (v0.2.0 -> 0.2.0); branch
+# builds leave it unset and keep the template's value.
+if [ -n "${VNPLAYER_VERSION:-}" ]; then
+    "$PB" -c "Delete :CFBundleShortVersionString" "$PLIST" 2>/dev/null || true
+    "$PB" -c "Add :CFBundleShortVersionString string $VNPLAYER_VERSION" "$PLIST"
+fi
+
 # Declare that we open zip archives, so VNPlayer shows up in the share sheet and in
 # "Open With" from Files. LSItemContentTypes uses the UTI, not the extension.
 "$PB" -c "Delete :CFBundleDocumentTypes" "$PLIST" 2>/dev/null || true
@@ -73,6 +84,9 @@ assert_key() {
 assert_key UIFileSharingEnabled true
 assert_key LSSupportsOpeningDocumentsInPlace true
 assert_key CFBundleDocumentTypes:0:LSItemContentTypes:0 public.zip-archive
+if [ -n "${VNPLAYER_VERSION:-}" ]; then
+    assert_key CFBundleShortVersionString "$VNPLAYER_VERSION"
+fi
 
 # And confirm the file is still a valid plist afterwards, rather than trusting that a
 # sequence of successful edits left it well-formed.

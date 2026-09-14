@@ -5,12 +5,6 @@ add it, read. No ads, no purchases, no accounts, no time limits.
 
 VNPlayer never downloads a game by itself. Every game arrives because you chose a file.
 
-> **Note (August 2026):** the newest release predates save export/import and the in-game
-> controls. Until the next release is tagged, take the build from
-> [Actions](https://github.com/NoCritics/renpy-mobile/actions/workflows/ios-build.yml) —
-> newest green run on `main`, **Artifacts → `VNPlayer-ipa`**, unzip, use the `.ipa`
-> inside. *Delete this note once a release is cut.*
-
 ---
 
 ## Install
@@ -82,9 +76,9 @@ Milestones A through D are merged: the engine shell, the iOS build pipeline, the
 and `.zip` import, the in-game overlay, and save transfer. A commercial 1.2 GB visual
 novel imports and plays by touch on an iPhone 13 Pro Max.
 
-**Save export and import have not yet been tested on a device** —
-[`docs/STATE.md`](docs/STATE.md) carries the checklist and is the honest account of what
-is verified versus what merely compiles.
+Save export, import and whole-library backup are device-tested.
+[`docs/STATE.md`](docs/STATE.md) is the honest account of what is verified versus what
+merely compiles.
 
 ## More
 
